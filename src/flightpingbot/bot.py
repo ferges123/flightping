@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+
+from .aeroapi import AeroAPI
+from .auth import Auth
+from .config import Settings
+from .database import Database
+from .handlers.admin import make_router as make_admin_router
+from .handlers.monitoring import make_router as make_monitoring_router
+from .monitor import FlightService, MonitorManager
+from .maintenance import Maintenance
+from .repositories import Repository
+from .keyboards import main_keyboard
+from .formatting import format_check
+
+log = logging.getLogger(__name__)
+
+
+async def run(settings: Settings) -> None:
+    settings.state_dir.mkdir(parents=True, exist_ok=True)
+    db = await Database(settings.database_path).connect()
+    repo = Repository(db, settings.credentials_key)
+    await repo.sync_admins(settings.admin_user_ids)
+    await repo.recover_monitors_after_restart()
+    auth = Auth(settings, repo)
+    aeroapi = AeroAPI()
+    service = FlightService(repo, aeroapi, settings.min_delay_minutes, settings.monitor_window_hours, settings.daily_api_request_limit, settings.monthly_api_request_limit, settings.user_request_cooldown_seconds)
+    monitor = MonitorManager(service, repo, settings.monitor_interval_minutes, settings.monitor_duration_hours, settings.max_active_airports)
+    maintenance = Maintenance(db, settings.observation_retention_days, settings.audit_retention_days, settings.api_request_retention_days, settings.state_dir / "backups", backup_count=3)
+    await maintenance.start()
+    bot = Bot(settings.bot_token)
+
+    def restored_notification(user_id: int, chat_id: int):
+        async def notify(result):
+            await bot.send_message(chat_id, format_check(result, settings.timezone_name), parse_mode=ParseMode.HTML)
+        return notify
+
+    await monitor.restore_active(restored_notification)
+    user_commands = [
+        BotCommand(command="start", description="Request access or show access status"),
+        BotCommand(command="check", description="Check scheduled departures and delays"),
+        BotCommand(command="monitor", description="Start airport monitoring"),
+        BotCommand(command="stop", description="Stop your monitoring subscriptions"),
+        BotCommand(command="status", description="Show monitoring status"),
+        BotCommand(command="help", description="Show help and current settings"),
+        BotCommand(command="aeroapi", description="Configure your AeroAPI key"),
+        BotCommand(command="hide", description="Hide the keyboard"),
+    ]
+    admin_commands = user_commands + [
+        BotCommand(command="requests", description="List pending access requests"),
+        BotCommand(command="users", description="List users"),
+        BotCommand(command="usage", description="Show API usage"),
+        BotCommand(command="admin_status", description="Show system status"),
+        BotCommand(command="alerts", description="Show alerts"),
+        BotCommand(command="audit", description="Show audit events"),
+        BotCommand(command="db_status", description="Show database status"),
+        BotCommand(command="stopall", description="Stop all monitors"),
+    ]
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    for admin_id in settings.admin_user_ids:
+        try:
+            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as exc:
+            # Telegram returns chat not found until the admin sends /start
+            # to a newly created bot. Default user commands remain available.
+            log.warning("could not set admin command scope for %s: %s", admin_id, exc)
+    dispatcher = Dispatcher()
+    dispatcher.include_router(make_admin_router(auth, repo, bot, monitor))
+    dispatcher.include_router(make_monitoring_router(auth, service, monitor))
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await monitor.stop_all()
+        await maintenance.stop()
+        await aeroapi.close()
+        await bot.session.close()
+        await db.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", force=True)
+    try:
+        env_file = Path("config/flightpingbot.env")
+        settings = Settings.from_env(env_file if env_file.exists() else None)
+        asyncio.run(run(settings))
+    except KeyboardInterrupt:
+        pass

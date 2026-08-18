@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from datetime import datetime
+from html import escape
+from zoneinfo import ZoneInfo
+
+from .monitor import CheckResult
+from .errors import user_facing_error
+
+
+def _time(value: str | None, timezone_name: str) -> str:
+    if not value:
+        return "not available"
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    local = parsed.astimezone(ZoneInfo(timezone_name))
+    return f"{local:%Y-%m-%d %H:%M} {local.tzname()} ({parsed:%H:%M} UTC)"
+
+
+def _airport(code: str | None, name: str | None) -> str:
+    if not code:
+        return "?"
+    return f"{escape(code)} ({escape(name)})" if name else escape(code)
+
+
+def format_check(result: CheckResult, timezone_name: str = "Atlantic/Canary") -> str:
+    if result.error:
+        return f"❌ <b>Could not complete the flight check</b>\n\n{escape(user_facing_error(RuntimeError(result.error)))}"
+    if not result.delayed:
+        return (
+            f"✅ <b>{escape(result.airport)} — no major delays found</b>\n\n"
+            f"Checked <b>{len(result.flights)}</b> scheduled departure(s).\n"
+            f"Delay threshold: {result.min_delay_minutes} min"
+        )
+    blocks = [
+        f"⚠️ <b>Delays found at {escape(result.airport)}</b>",
+        f"{len(result.delayed)} flight(s) exceed the {result.min_delay_minutes}-minute threshold.",
+    ]
+    for flight in result.delayed[:10]:
+        delay = flight.get("delay_minutes") or 0
+        blocks.append(
+            "✈️ <b>{flight}</b>\n"
+            "🛫 {origin} → 🛬 {destination}\n"
+            "🕒 Scheduled: {scheduled}\n"
+            "⏱️ Estimated: {estimated}\n"
+            "🚨 Delay: <b>+{delay} min</b>".format(
+                flight=escape(flight["flight_id"]),
+                origin=_airport(flight.get("origin"), flight.get("origin_name")),
+                destination=_airport(flight.get("destination"), flight.get("destination_name")),
+                scheduled=_time(flight.get("scheduled_departure"), timezone_name),
+                estimated=_time(flight.get("estimated_departure"), timezone_name),
+                delay=delay,
+            )
+        )
+    if len(result.delayed) > 10:
+        blocks.append(f"…and {len(result.delayed) - 10} more delayed flight(s).")
+    return "\n\n".join(blocks)

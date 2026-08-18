@@ -1,0 +1,8 @@
+[Unit]
+Description=FlightPingBot health check
+After=flightpingbot.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/flightping
+ExecStart=/usr/bin/systemctl --user --quiet is-active flightpingbot.service

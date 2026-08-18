@@ -1,0 +1,11 @@
+[Unit]
+Description=Check FlightPingBot service health periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=flightpingbot-healthcheck.service
+
+[Install]
+WantedBy=timers.target
