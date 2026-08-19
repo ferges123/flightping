@@ -36,6 +36,17 @@ class AeroAPI:
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             return None, str(exc)
 
+    async def airport_timezone(self, airport: str, api_key: str) -> str | None:
+        """Return the IANA timezone for an airport when AeroAPI provides it."""
+        try:
+            response = await self.client.get(f"/airports/{airport}", headers={"x-apikey": api_key})
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+            return payload.get("timezone") or payload.get("time_zone")
+        except (httpx.HTTPError, ValueError):
+            return None
+
     async def scheduled_departures(self, airport: str, window_hours: int, api_key: str) -> tuple[list[dict], int | None, int, str | None, int]:
         start = datetime.now(timezone.utc).replace(microsecond=0)
         end = start + timedelta(hours=window_hours)
@@ -99,10 +110,15 @@ class AeroAPI:
         destination = item.get("destination") if isinstance(item.get("destination"), dict) else {}
         return {
             "flight_id": str(item.get("ident_iata") or item.get("ident") or item.get("flight_number") or "unknown"),
+            # FlightAware's web tracker uses the ICAO callsign (e.g. WZZ1411)
+            # even when AeroAPI also returns the IATA number (e.g. W61411).
+            "flightaware_id": str(item.get("ident") or item.get("ident_iata") or item.get("flight_number") or "unknown"),
             "origin": origin.get("code_iata") or origin.get("code"),
             "origin_name": origin.get("name"),
+            "origin_timezone": origin.get("timezone"),
             "destination": destination.get("code_iata") or destination.get("code"),
             "destination_name": destination.get("name"),
+            "destination_timezone": destination.get("timezone"),
             "scheduled_departure": scheduled,
             "estimated_departure": estimated,
             "delay_minutes": delay,

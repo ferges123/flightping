@@ -131,6 +131,13 @@ MIGRATIONS = [
     ALTER TABLE user_aeroapi_credentials ADD COLUMN needs_reauth INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE user_aeroapi_credentials ADD COLUMN invalid_at TEXT;
     """,
+    """
+    ALTER TABLE flight_observations ADD COLUMN flightaware_id TEXT;
+    """,
+    """
+    ALTER TABLE flight_observations ADD COLUMN origin_timezone TEXT;
+    ALTER TABLE flight_observations ADD COLUMN destination_timezone TEXT;
+    """,
 ]
 
 

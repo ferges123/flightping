@@ -243,6 +243,16 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
         if not message.from_user or not await auth.is_approved(message.from_user.id):
             await message.answer("🔒 You don't have access yet. Send /start to request access.")
             return
+        parts = (message.text or "").split()
+        if len(parts) > 2:
+            await message.answer("Usage: /stop [IATA]\nExample: /stop WAW")
+            return
+        if len(parts) == 2:
+            airport = parts[1].upper()
+            changed = await monitor.stop_user_airport(message.from_user.id, airport, message.chat.id)
+            await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airport)
+            await message.answer(f"✅ Monitoring for <b>{airport}</b> was stopped." if changed else f"ℹ️ You have no active monitoring for <b>{airport}</b>.", parse_mode=ParseMode.HTML)
+            return
         changed = await monitor.stop_user(message.from_user.id, message.chat.id)
         await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
         await message.answer("✅ Your monitoring subscriptions were stopped." if changed else "ℹ️ You have no active monitoring subscriptions.")

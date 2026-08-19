@@ -29,6 +29,7 @@ class FlightService:
         self.request_cooldown_seconds = request_cooldown_seconds
         self._last_request_at: dict[int, float] = {}
         self._request_lock = asyncio.Lock()
+        self._airport_timezones: dict[str, str | None] = {}
 
     async def _enforce_request_cooldown(self, actor_user_id: int) -> None:
         now = asyncio.get_running_loop().time()
@@ -54,7 +55,13 @@ class FlightService:
             raise RuntimeError("Configure your AeroAPI key first with /aeroapi.")
         await self._enforce_request_cooldown(actor_user_id)
         check_id = await self.repo.create_check(actor_user_id, airport, self.window_hours)
+        if airport not in self._airport_timezones:
+            timezone_lookup = getattr(self.aeroapi, "airport_timezone", None)
+            self._airport_timezones[airport] = await timezone_lookup(airport, api_key) if timezone_lookup else None
+        airport_timezone = self._airport_timezones[airport]
         flights, status, latency, error, retries = await self.aeroapi.scheduled_departures(airport, self.window_hours, api_key)
+        for flight in flights:
+            flight.setdefault("origin_timezone", airport_timezone)
         if status in {401, 403}:
             await self.repo.mark_aeroapi_key_invalid(actor_user_id)
         await self.repo.record_api_request(check_id, f"airports/{airport}/flights/scheduled_departures", status, latency, retry_number=retries, error=error)
@@ -84,6 +91,7 @@ class _JobState:
     task: asyncio.Task
     stop_event: asyncio.Event
     callbacks: dict[tuple[int, int], object]
+    preserve_on_exit: bool = False
 
 
 class MonitorManager:
@@ -128,6 +136,20 @@ class MonitorManager:
                 await self._stop_job(job_key, state)
         return changed
 
+    async def stop_user_airport(self, user_id: int, airport: str, chat_id: int | None = None) -> bool:
+        """Stop one airport for a user; optionally limit removal to one chat."""
+        airport = airport.strip().upper()
+        state = self.jobs.get((user_id, airport))
+        if not state:
+            return False
+        keys = [key for key in state.callbacks if key[0] == user_id and (chat_id is None or key[1] == chat_id)]
+        for key in keys:
+            state.callbacks.pop(key, None)
+            await self.repo.remove_subscription(state.job_id, key[0], key[1])
+        if keys and not state.callbacks:
+            await self._stop_job((user_id, airport), state)
+        return bool(keys)
+
     async def stop_user_all(self, user_id: int) -> bool:
         changed = False
         for job_key, state in list(self.jobs.items()):
@@ -140,9 +162,9 @@ class MonitorManager:
                 await self._stop_job(job_key, state)
         return changed
 
-    async def stop_all(self) -> None:
+    async def stop_all(self, *, persist: bool = True) -> None:
         for job_key, state in list(self.jobs.items()):
-            await self._stop_job(job_key, state)
+            await self._stop_job(job_key, state, persist=persist)
 
     async def restore_active(self, callback_factory) -> None:
         rows = await self.repo.active_monitor_jobs()
@@ -158,12 +180,29 @@ class MonitorManager:
             }
             task = asyncio.create_task(self._run(job_id, airport, actor_user_id, stop_event), name=f"flightping-monitor-{actor_user_id}-{airport}")
             self.jobs[(actor_user_id, airport)] = _JobState(job_id, airport, actor_user_id, task, stop_event, callbacks)
+        log.info("restored %d active monitor(s) after restart", len(grouped))
 
-    async def _stop_job(self, job_key: tuple[int, str], state: _JobState) -> None:
+    async def _stop_job(self, job_key: tuple[int, str], state: _JobState, *, persist: bool = True) -> None:
         state.stop_event.set()
+        state.preserve_on_exit = not persist
         await state.task
-        await self.repo.stop_monitor_job(state.job_id)
+        if persist:
+            await self.repo.stop_monitor_job(state.job_id)
         self.jobs.pop(job_key, None)
+
+    async def _notify_invalid_key(self, state: _JobState) -> None:
+        result = CheckResult(
+            check_id=state.job_id,
+            airport=state.airport,
+            flights=[],
+            delayed=[],
+            error="AeroAPI authorization failed. Please replace your key with /aeroapi.",
+        )
+        for (user_id, chat_id), notify in list(state.callbacks.items()):
+            try:
+                await notify(result)
+            except Exception:
+                log.exception("could not notify chat %s about invalid AeroAPI key", chat_id)
 
     async def _run(self, job_id: int, airport: str, actor_user_id: int, stop_event: asyncio.Event) -> None:
         deadline = asyncio.get_running_loop().time() + self.duration
@@ -174,6 +213,10 @@ class MonitorManager:
                     if stop_event.is_set():
                         break
                     state = self.jobs.get((actor_user_id, airport))
+                    if state and result.error and any(code in result.error for code in ("HTTP 401", "HTTP 403")):
+                        await self._notify_invalid_key(state)
+                        log.warning("stopping monitor %s: AeroAPI key was rejected", job_id)
+                        break
                     if state and result.delayed:
                         for (user_id, chat_id), notify in list(state.callbacks.items()):
                             if stop_event.is_set():
@@ -189,12 +232,22 @@ class MonitorManager:
                                 log.exception("alert delivery failed for chat %s", chat_id)
                                 continue
                             await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=True)
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and str(exc) == "Configure your AeroAPI key first with /aeroapi.":
+                        # The key was marked invalid by the preceding cycle. Do not
+                        # keep a dead job alive for the remainder of its duration.
+                        log.warning("stopping monitor %s: AeroAPI key is no longer valid", job_id)
+                        state = self.jobs.get((actor_user_id, airport))
+                        if state:
+                            await self._notify_invalid_key(state)
+                        break
                     log.exception("monitor cycle failed")
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=self.interval)
                 except asyncio.TimeoutError:
                     pass
         finally:
-            await self.repo.stop_monitor_job(job_id)
+            state = self.jobs.get((actor_user_id, airport))
+            if not state or not state.preserve_on_exit:
+                await self.repo.stop_monitor_job(job_id)
             self.jobs.pop((actor_user_id, airport), None)

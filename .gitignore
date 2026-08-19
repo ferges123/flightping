@@ -1,14 +1,52 @@
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.egg-info/
 *.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Unit test / coverage
 .pytest_cache/
-.env
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Environment and Secrets
 *.env
+*.env.*
+!.env.example
+.env
+config/*.env
+config/flightpingbot.env
+
+# Application State & Databases
 state/
 *.db
 *.sqlite*
-*.sqlite3-*
-config/*.env
-config/flightpingbot.env
-state/backups/
+*.sqlite3*
+
+# IDE & Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Agent & CLI scratch directories
+.agents/
+.codex/

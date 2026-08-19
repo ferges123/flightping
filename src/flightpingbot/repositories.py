@@ -143,8 +143,8 @@ class Repository:
 
     async def record_observation(self, check_id: int, flight: dict, threshold: int) -> None:
         await self.db.execute("""INSERT OR IGNORE INTO flight_observations
-            (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at)
-            VALUES(?,?,?,?,?,?,?,?,?)""", (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), utcnow()))
+            (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at,flightaware_id,origin_timezone,destination_timezone)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), utcnow(), flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone")))
         await self.db.commit()
 
     async def finish_check(self, check_id: int, *, status: str, request_count: int, flight_count: int, delayed_count: int, error: str | None = None) -> None:
@@ -155,6 +155,21 @@ class Repository:
         if airport:
             return await (await self.db.execute("SELECT * FROM checks WHERE airport=? ORDER BY id DESC LIMIT ?", (airport, limit))).fetchall()
         return await (await self.db.execute("SELECT * FROM checks ORDER BY id DESC LIMIT ?", (limit,))).fetchall()
+
+    async def successful_checks(self, limit: int = 100):
+        return await (await self.db.execute(
+            "SELECT * FROM checks WHERE status='completed' ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )).fetchall()
+
+    async def delayed_observations(self, limit: int = 100):
+        return await (await self.db.execute(
+            """SELECT o.*, c.airport FROM flight_observations o
+               JOIN checks c ON c.id=o.check_id
+               WHERE o.above_threshold=1
+               ORDER BY o.id DESC LIMIT ?""",
+            (limit,),
+        )).fetchall()
 
     async def usage(self, since: str, actor_user_id: int | None = None):
         query = """SELECT COUNT(*) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,

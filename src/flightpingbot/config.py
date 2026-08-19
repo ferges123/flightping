@@ -42,6 +42,10 @@ class Settings:
     timezone_name: str = "Atlantic/Canary"
     credentials_key: str = ""
     user_request_cooldown_seconds: int = 5
+    telegram_messages_per_minute: int = 30
+    fsm_state_ttl_seconds: int = 900
+    web_host: str = "192.168.2.111"
+    web_port: int = 8080
 
     @property
     def database_path(self) -> Path:
@@ -91,4 +95,8 @@ class Settings:
             timezone_name,
             credentials_key,
             _int("FPB_USER_REQUEST_COOLDOWN_SECONDS", 5),
+            _int("FPB_TELEGRAM_MESSAGES_PER_MINUTE", 30, minimum=1),
+            _int("FPB_FSM_STATE_TTL_SECONDS", 900, minimum=60),
+            os.getenv("FPB_WEB_HOST", "192.168.2.111").strip() or "192.168.2.111",
+            _int("FPB_WEB_PORT", 8080, minimum=1),
         )

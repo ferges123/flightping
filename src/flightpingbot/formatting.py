@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from .monitor import CheckResult
@@ -22,6 +23,10 @@ def _airport(code: str | None, name: str | None) -> str:
     return f"{escape(code)} ({escape(name)})" if name else escape(code)
 
 
+def flightaware_url(flight_id: str) -> str:
+    return f"https://www.flightaware.com/live/flight/{quote(str(flight_id), safe='')}"
+
+
 def format_check(result: CheckResult, timezone_name: str = "Atlantic/Canary") -> str:
     if result.error:
         return f"❌ <b>Could not complete the flight check</b>\n\n{escape(user_facing_error(RuntimeError(result.error)))}"
@@ -38,16 +43,17 @@ def format_check(result: CheckResult, timezone_name: str = "Atlantic/Canary") ->
     for flight in result.delayed[:10]:
         delay = flight.get("delay_minutes") or 0
         blocks.append(
-            "✈️ <b>{flight}</b>\n"
+            "✈️ <a href=\"{url}\"><b>{flight}</b></a>\n"
             "🛫 {origin} → 🛬 {destination}\n"
             "🕒 Scheduled: {scheduled}\n"
             "⏱️ Estimated: {estimated}\n"
             "🚨 Delay: <b>+{delay} min</b>".format(
                 flight=escape(flight["flight_id"]),
+                url=escape(flightaware_url(flight.get("flightaware_id") or flight["flight_id"]), quote=True),
                 origin=_airport(flight.get("origin"), flight.get("origin_name")),
                 destination=_airport(flight.get("destination"), flight.get("destination_name")),
-                scheduled=_time(flight.get("scheduled_departure"), timezone_name),
-                estimated=_time(flight.get("estimated_departure"), timezone_name),
+                scheduled=_time(flight.get("scheduled_departure"), flight.get("origin_timezone") or timezone_name),
+                estimated=_time(flight.get("estimated_departure"), flight.get("origin_timezone") or timezone_name),
                 delay=delay,
             )
         )

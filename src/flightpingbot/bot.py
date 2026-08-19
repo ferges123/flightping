@@ -19,11 +19,16 @@ from .maintenance import Maintenance
 from .repositories import Repository
 from .keyboards import main_keyboard
 from .formatting import format_check
+from .security import InboundSecurityMiddleware
 
 log = logging.getLogger(__name__)
 
 
 async def run(settings: Settings) -> None:
+    # Keep the Telegram bot importable in minimal environments; web dependencies
+    # are only needed when the application is actually started.
+    from .web import WebPanel, serve as serve_web
+
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     db = await Database(settings.database_path).connect()
     repo = Repository(db, settings.credentials_key)
@@ -43,6 +48,10 @@ async def run(settings: Settings) -> None:
         return notify
 
     await monitor.restore_active(restored_notification)
+    web_task = asyncio.create_task(
+        serve_web(WebPanel(repo, monitor, bot, settings.admin_user_ids, settings.timezone_name), settings.web_host, settings.web_port),
+        name="flightping-web",
+    )
     user_commands = [
         BotCommand(command="start", description="Request access or show access status"),
         BotCommand(command="check", description="Check scheduled departures and delays"),
@@ -72,12 +81,26 @@ async def run(settings: Settings) -> None:
             # to a newly created bot. Default user commands remain available.
             log.warning("could not set admin command scope for %s: %s", admin_id, exc)
     dispatcher = Dispatcher()
+    dispatcher.message.middleware(
+        InboundSecurityMiddleware(
+            settings.admin_user_ids,
+            settings.telegram_messages_per_minute,
+            settings.fsm_state_ttl_seconds,
+        )
+    )
     dispatcher.include_router(make_admin_router(auth, repo, bot, monitor))
     dispatcher.include_router(make_monitoring_router(auth, service, monitor))
     try:
         await dispatcher.start_polling(bot)
     finally:
-        await monitor.stop_all()
+        web_task.cancel()
+        try:
+            await web_task
+        except asyncio.CancelledError:
+            pass
+        # Stop in-memory tasks without marking persisted monitors as stopped;
+        # the next process start will restore them from SQLite.
+        await monitor.stop_all(persist=False)
         await maintenance.stop()
         await aeroapi.close()
         await bot.session.close()
