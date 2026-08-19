@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import FileResponse, HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
 from .formatting import flightaware_url
@@ -14,7 +15,9 @@ from .formatting import flightaware_url
 CSS = """
 :root { color-scheme: light; font-family: system-ui, sans-serif; }
 body { margin: 0; background: #f4f6f8; color: #17212b; }
-header { background: #17212b; color: white; padding: 1rem max(1rem, calc((100% - 1100px)/2)); }
+header { background: #17212b; color: white; padding: .65rem max(1rem, calc((100% - 1100px)/2)); }
+.brand { display: inline-flex; align-items: center; gap: .55rem; margin-right: 1.25rem; }
+.brand img { width: 42px; height: 42px; object-fit: cover; border-radius: 50%; background: white; vertical-align: middle; }
 header a { color: white; text-decoration: none; margin-right: 1rem; }
 main { max-width: 1100px; margin: 1.25rem auto; padding: 0 1rem; }
 .muted { color: #687582; font-size: .9rem; }
@@ -48,6 +51,16 @@ def _time(value, timezone_name: str = "Atlantic/Canary") -> str:
         return _e(str(value).replace("T", " ")[:19])
 
 
+def _add_duration(value, duration_seconds: int):
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (parsed + timedelta(seconds=duration_seconds)).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
 class WebPanel:
     """Small server-rendered admin panel sharing the bot's repository."""
 
@@ -61,6 +74,7 @@ class WebPanel:
     def app(self) -> Starlette:
         routes = [
             Route("/", self.dashboard),
+            Route("/logo.jpeg", self.logo),
             Route("/monitoring", self.monitoring),
             Route("/users", self.users),
             Route("/history", self.history),
@@ -71,9 +85,13 @@ class WebPanel:
         ]
         return Starlette(routes=routes)
 
+    async def logo(self, request):
+        logo_path = Path(__file__).resolve().parents[2] / "logo.jpeg"
+        return FileResponse(logo_path, media_type="image/jpeg")
+
     def page(self, title: str, body: str, refresh_path: str = "/") -> HTMLResponse:
         now = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><b>FlightPing</b> <nav><a href='/'>Dashboard</a><a href='/monitoring'>Monitoring</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delayed flights</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
+        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Dashboard</a><a href='/monitoring'>Monitoring</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delayed flights</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
         return HTMLResponse(html)
 
     async def dashboard(self, request):
@@ -92,10 +110,11 @@ class WebPanel:
 
     async def monitoring(self, request):
         rows = await self.repo.active_monitor_jobs()
-        body = "<h1>Active monitoring</h1><table><tr><th>Airport</th><th>User</th><th>Interval</th><th>Started</th><th>Action</th></tr>"
+        body = "<h1>Active monitoring</h1><table><tr><th>Airport</th><th>User</th><th>Interval</th><th>Started</th><th>Valid until</th><th>Action</th></tr>"
         for row in rows:
             action = f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
-            body += f"<tr><td><b>{_e(row['airport'])}</b></td><td>{row['actor_user_id']}</td><td>{row['interval_minutes']} min</td><td>{_time(row['started_at'], self.timezone_name)}</td><td>{action}</td></tr>"
+            valid_until = _add_duration(row["started_at"], self.monitor.duration) if self.monitor else None
+            body += f"<tr><td><b>{_e(row['airport'])}</b></td><td>{row['actor_user_id']}</td><td>{row['interval_minutes']} min</td><td>{_time(row['started_at'], self.timezone_name)}</td><td>{_time(valid_until, self.timezone_name)}</td><td>{action}</td></tr>"
         body += "</table>" if rows else "<p>No active monitors.</p>"
         return self.page("Monitoring", body, request.url.path)
 

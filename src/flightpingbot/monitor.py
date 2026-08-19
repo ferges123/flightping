@@ -100,6 +100,9 @@ class MonitorManager:
         self.interval, self.duration = interval_minutes * 60, duration_hours * 3600
         self.max_active_airports = max_active_airports
         self.jobs: dict[tuple[int, str], _JobState] = {}
+        # Cooldowns are tracked per user, so serialize that user's monitor
+        # checks instead of letting simultaneous jobs reject each other.
+        self._check_queues: dict[int, asyncio.Lock] = {}
 
     @property
     def active(self) -> bool:
@@ -178,7 +181,10 @@ class MonitorManager:
                 (row["telegram_user_id"], row["subscription_chat_id"]): callback_factory(row["telegram_user_id"], row["subscription_chat_id"])
                 for row in subscriptions
             }
-            task = asyncio.create_task(self._run(job_id, airport, actor_user_id, stop_event), name=f"flightping-monitor-{actor_user_id}-{airport}")
+            task = asyncio.create_task(
+                self._run(job_id, airport, actor_user_id, stop_event, subscriptions[0]["started_at"]),
+                name=f"flightping-monitor-{actor_user_id}-{airport}",
+            )
             self.jobs[(actor_user_id, airport)] = _JobState(job_id, airport, actor_user_id, task, stop_event, callbacks)
         log.info("restored %d active monitor(s) after restart", len(grouped))
 
@@ -204,12 +210,46 @@ class MonitorManager:
             except Exception:
                 log.exception("could not notify chat %s about invalid AeroAPI key", chat_id)
 
-    async def _run(self, job_id: int, airport: str, actor_user_id: int, stop_event: asyncio.Event) -> None:
-        deadline = asyncio.get_running_loop().time() + self.duration
-        try:
-            while not stop_event.is_set() and asyncio.get_running_loop().time() < deadline:
+    async def _queued_check(self, actor_user_id: int, airport: str) -> CheckResult:
+        queue = self._check_queues.setdefault(actor_user_id, asyncio.Lock())
+        async with queue:
+            while True:
                 try:
-                    result = await self.service.check(actor_user_id, airport)
+                    return await self.service.check(actor_user_id, airport)
+                except RuntimeError as exc:
+                    message = str(exc)
+                    if not message.startswith("Please wait "):
+                        raise
+                    try:
+                        wait_seconds = max(1, int(message.split()[2]))
+                    except (IndexError, ValueError):
+                        wait_seconds = 1
+                    await asyncio.sleep(wait_seconds)
+
+    async def _run(self, job_id: int, airport: str, actor_user_id: int, stop_event: asyncio.Event, started_at: str | None = None) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.duration
+        first_delay = 0.0
+        if started_at:
+            try:
+                started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                elapsed = max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+                deadline = loop.time() + max(0.0, self.duration - elapsed)
+                intervals_elapsed = int(elapsed // self.interval)
+                first_delay = max(0.0, (intervals_elapsed + 1) * self.interval - elapsed)
+            except (TypeError, ValueError):
+                log.warning("invalid monitor start time for %s: %s", airport, started_at)
+        if started_at and first_delay:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=min(first_delay, max(0.0, deadline - loop.time())))
+            except asyncio.TimeoutError:
+                pass
+        try:
+            while not stop_event.is_set() and loop.time() < deadline:
+                try:
+                    result = await self._queued_check(actor_user_id, airport)
                     if stop_event.is_set():
                         break
                     state = self.jobs.get((actor_user_id, airport))
