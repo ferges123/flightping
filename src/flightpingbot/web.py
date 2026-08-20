@@ -182,7 +182,7 @@ class WebPanel:
         user_id = int(request.path_params["user_id"])
         airport = request.path_params["airport"]
         if await self.monitor.stop_user_airport(user_id, airport):
-            await self.repo.audit(next(iter(self.admin_ids)), "monitor_stop", "monitor", airport, {"user_id": user_id, "source": "web"})
+            await self.repo.audit(None, "monitor_stop", "monitor", airport, {"user_id": user_id, "source": "web"})
         return RedirectResponse("/monitoring", status_code=303)
 
     async def start_monitor(self, request):
@@ -212,9 +212,9 @@ class WebPanel:
         decision = request.path_params["decision"]
         if decision not in {"approve", "deny"}:
             return RedirectResponse("/users", status_code=303)
-        changed, user_id = await self.repo.decide_request(request_id, next(iter(self.admin_ids)), decision == "approve")
+        changed, user_id = await self.repo.decide_request(request_id, None, decision == "approve")
         if changed and user_id:
-            await self.repo.audit(next(iter(self.admin_ids)), "access_decision", "access_request", str(request_id), {"decision": decision, "user_id": user_id, "source": "web"})
+            await self.repo.audit(None, "access_decision", "access_request", str(request_id), {"decision": decision, "user_id": user_id, "source": "web"})
             try:
                 await self.bot.send_message(user_id, "✅ Access granted." if decision == "approve" else "❌ Access request denied.")
             except Exception:
@@ -227,8 +227,7 @@ class WebPanel:
         if status in {"approved", "revoked", "blocked"} and await self.repo.set_user_status(user_id, status):
             if status in {"revoked", "blocked"}:
                 await self.monitor.stop_user_all(user_id)
-            admin_id = next(iter(self.admin_ids))
-            await self.repo.audit(admin_id, f"user_{status}", "user", str(user_id), {"source": "web"})
+            await self.repo.audit(None, f"user_{status}", "user", str(user_id), {"source": "web"})
         return RedirectResponse("/users", status_code=303)
 
 

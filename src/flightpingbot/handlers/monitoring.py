@@ -48,7 +48,9 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             if removed:
                 await service.repo.audit(user.id, "aeroapi_key_removed")
                 await monitor.stop_user_all(user.id)
-                await message.answer("✅ Your AeroAPI key was removed and monitoring was stopped." if removed else "ℹ️ No AeroAPI key was configured.")
+                await message.answer("✅ Your AeroAPI key was removed and monitoring was stopped.")
+            else:
+                await message.answer("ℹ️ No AeroAPI key was configured.")
         elif action == "test":
             try:
                 status = await service.test_aeroapi(user.id)

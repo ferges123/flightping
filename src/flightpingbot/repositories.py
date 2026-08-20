@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 import json
 
 from .database import Database
@@ -11,11 +12,20 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _serialized_write(method):
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        async with self.db.write_lock:
+            return await method(self, *args, **kwargs)
+    return wrapped
+
+
 class Repository:
     def __init__(self, db: Database, credentials_key: str | None = None):
         self.db = db
         self.credentials = CredentialCipher(credentials_key) if credentials_key else None
 
+    @_serialized_write
     async def set_aeroapi_key(self, user_id: int, api_key: str) -> None:
         if not self.credentials:
             raise RuntimeError("AeroAPI credential encryption is not configured")
@@ -42,15 +52,18 @@ class Repository:
         row = await (await self.db.execute("SELECT key_suffix, needs_reauth FROM user_aeroapi_credentials WHERE telegram_user_id=?", (user_id,))).fetchone()
         return f"invalid:{row[0]}" if row and row[1] else (row[0] if row else None)
 
+    @_serialized_write
     async def mark_aeroapi_key_invalid(self, user_id: int) -> None:
         await self.db.execute("UPDATE user_aeroapi_credentials SET needs_reauth=1, invalid_at=?, updated_at=? WHERE telegram_user_id=?", (utcnow(), utcnow(), user_id))
         await self.db.commit()
 
+    @_serialized_write
     async def remove_aeroapi_key(self, user_id: int) -> bool:
         cursor = await self.db.execute("DELETE FROM user_aeroapi_credentials WHERE telegram_user_id=?", (user_id,))
         await self.db.commit()
         return cursor.rowcount == 1
 
+    @_serialized_write
     async def sync_admins(self, admin_ids: frozenset[int]) -> None:
         now = utcnow()
         rows = await (await self.db.execute("SELECT telegram_user_id, is_admin FROM users WHERE is_admin=1")).fetchall()
@@ -68,6 +81,7 @@ class Repository:
     async def user(self, user_id: int):
         return await (await self.db.execute("SELECT * FROM users WHERE telegram_user_id=?", (user_id,))).fetchone()
 
+    @_serialized_write
     async def upsert_access_request(self, user_id: int, chat_id: int, username: str | None, display_name: str) -> tuple[str, int | None]:
         now = utcnow()
         current = await self.user(user_id)
@@ -95,7 +109,8 @@ class Repository:
         await self.db.commit()
         return "requested", request_id
 
-    async def decide_request(self, request_id: int, admin_id: int, approve: bool) -> tuple[bool, int | None]:
+    @_serialized_write
+    async def decide_request(self, request_id: int, admin_id: int | None, approve: bool) -> tuple[bool, int | None]:
         now = utcnow()
         status = "approved" if approve else "denied"
         await self.db.execute("BEGIN IMMEDIATE")
@@ -131,22 +146,39 @@ class Repository:
     async def pending_request_for_user(self, user_id: int):
         return await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status='pending'", (user_id,))).fetchone()
 
+    @_serialized_write
     async def create_check(self, actor: int, airport: str, window_hours: int) -> int:
         now = utcnow()
         cursor = await self.db.execute("INSERT INTO checks(actor_user_id,airport,window_hours,status,started_at) VALUES(?,?,?,'running',?)", (actor, airport, window_hours, now))
         await self.db.commit()
         return cursor.lastrowid
 
+    @_serialized_write
     async def record_api_request(self, check_id: int, endpoint: str, status_code: int | None, latency_ms: int, retry_number: int = 0, error: str | None = None) -> None:
         await self.db.execute("INSERT INTO api_requests(check_id,endpoint,status_code,latency_ms,retry_number,error,created_at) VALUES(?,?,?,?,?,?,?)", (check_id, endpoint, status_code, latency_ms, retry_number, error, utcnow()))
         await self.db.commit()
 
+    @_serialized_write
     async def record_observation(self, check_id: int, flight: dict, threshold: int) -> None:
         await self.db.execute("""INSERT OR IGNORE INTO flight_observations
             (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at,flightaware_id,origin_timezone,destination_timezone)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), utcnow(), flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone")))
         await self.db.commit()
 
+    @_serialized_write
+    async def record_observations(self, check_id: int, flights: list[dict], threshold: int) -> None:
+        if not flights:
+            return
+        observed_at = utcnow()
+        await self.db.executemany("""INSERT OR IGNORE INTO flight_observations
+            (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at,flightaware_id,origin_timezone,destination_timezone)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", [
+                (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), observed_at, flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone"))
+                for flight in flights
+            ])
+        await self.db.commit()
+
+    @_serialized_write
     async def finish_check(self, check_id: int, *, status: str, request_count: int, flight_count: int, delayed_count: int, error: str | None = None) -> None:
         await self.db.execute("UPDATE checks SET status=?,request_count=?,flight_count=?,delayed_count=?,error=?,finished_at=? WHERE id=?", (status, request_count, flight_count, delayed_count, error, utcnow(), check_id))
         await self.db.commit()
@@ -176,7 +208,7 @@ class Repository:
         )).fetchall()
 
     async def usage(self, since: str, actor_user_id: int | None = None):
-        query = """SELECT COUNT(*) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
+        query = """SELECT COALESCE(SUM(1 + a.retry_number), 0) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
             SUM(a.status_code IS NULL OR a.status_code >= 400) AS errors, SUM(a.retry_number) AS retries
             FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"""
         args: list = [since]
@@ -189,13 +221,13 @@ class Repository:
         return await (await self.db.execute("""SELECT c.actor_user_id AS user_id,
             CASE WHEN NULLIF(u.username, '') IS NOT NULL THEN '@' || u.username
                  ELSE COALESCE(NULLIF(u.display_name, ''), CAST(c.actor_user_id AS TEXT)) END AS user_name,
-            COUNT(*) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
+            COALESCE(SUM(1 + a.retry_number), 0) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
             SUM(a.status_code IS NULL OR a.status_code >= 400) AS errors, SUM(a.retry_number) AS retries
             FROM api_requests a JOIN checks c ON c.id=a.check_id LEFT JOIN users u ON u.telegram_user_id=c.actor_user_id
             WHERE a.created_at>=? GROUP BY c.actor_user_id ORDER BY total DESC""", (since,))).fetchall()
 
     async def api_request_count(self, since: str, actor_user_id: int | None = None) -> int:
-        query = "SELECT COUNT(*) FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"
+        query = "SELECT COALESCE(SUM(1 + a.retry_number), 0) FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"
         args: list = [since]
         if actor_user_id is not None:
             query += " AND c.actor_user_id=?"
@@ -203,6 +235,7 @@ class Repository:
         row = await (await self.db.execute(query, args)).fetchone()
         return row[0]
 
+    @_serialized_write
     async def audit(self, actor_user_id: int | None, action: str, object_type: str | None = None, object_id: str | None = None, metadata: dict | None = None) -> None:
         await self.db.execute("""INSERT INTO audit_events(actor_user_id,action,object_type,object_id,metadata_json,created_at)
             VALUES(?,?,?,?,?,?)""", (actor_user_id, action, object_type, object_id, json.dumps(metadata or {}, sort_keys=True), utcnow()))
@@ -227,6 +260,7 @@ class Repository:
     async def check_observations(self, check_id: int):
         return await (await self.db.execute("SELECT * FROM flight_observations WHERE check_id=? ORDER BY id", (check_id,))).fetchall()
 
+    @_serialized_write
     async def set_user_status(self, user_id: int, status: str) -> bool:
         if status not in {"approved", "revoked", "blocked"}:
             raise ValueError("invalid user status")
@@ -239,6 +273,7 @@ class Repository:
             FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id
             WHERE j.status='active' ORDER BY j.id""")).fetchall()
 
+    @_serialized_write
     async def recover_monitors_after_restart(self) -> None:
         """Stop persisted monitor rows whose owners no longer have access."""
         await self.db.execute("""UPDATE monitor_jobs
@@ -250,6 +285,7 @@ class Repository:
             )""", (utcnow(),))
         await self.db.commit()
 
+    @_serialized_write
     async def create_monitor_job(self, actor_user_id: int, chat_id: int, airport: str, window_hours: int, interval_minutes: int, max_active_airports: int = 3) -> tuple[int, bool]:
         existing = await (await self.db.execute("SELECT id FROM monitor_jobs WHERE status='active' AND actor_user_id=? AND airport=? LIMIT 1", (actor_user_id, airport))).fetchone()
         if existing:
@@ -267,6 +303,7 @@ class Repository:
         await self.db.commit()
         return job_id, True
 
+    @_serialized_write
     async def remove_subscription(self, job_id: int, user_id: int, chat_id: int) -> bool:
         cursor = await self.db.execute("DELETE FROM monitor_subscriptions WHERE job_id=? AND telegram_user_id=? AND chat_id=?", (job_id, user_id, chat_id))
         await self.db.commit()
@@ -278,23 +315,35 @@ class Repository:
     async def user_monitor_jobs(self, user_id: int, chat_id: int):
         return await (await self.db.execute("SELECT j.* FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id WHERE s.telegram_user_id=? AND s.chat_id=? AND j.status='active'", (user_id, chat_id))).fetchall()
 
+    @_serialized_write
     async def stop_monitor_job(self, job_id: int | None) -> None:
         if job_id is None:
             return
         await self.db.execute("UPDATE monitor_jobs SET status='stopped', stopped_at=? WHERE id=? AND status='active'", (utcnow(), job_id))
         await self.db.commit()
 
+    @_serialized_write
     async def claim_new_alerts(self, check_id: int, recipient_chat_id: int, flights: list[dict]) -> list[dict]:
         new_flights: list[dict] = []
         for flight in flights:
-            cursor = await self.db.execute("""INSERT OR IGNORE INTO alerts
+            cursor = await self.db.execute("""INSERT INTO alerts
                 (check_id,recipient_chat_id,flight_id,scheduled_departure,delay_minutes,status,created_at)
-                VALUES(?,?,?,?,?,'pending',?)""", (check_id, recipient_chat_id, flight["flight_id"], flight.get("scheduled_departure") or "unknown", flight.get("delay_minutes") or 0, utcnow()))
+                VALUES(?,?,?,?,?,'pending',?)
+                ON CONFLICT(flight_id, scheduled_departure, recipient_chat_id) DO UPDATE SET
+                    check_id=excluded.check_id,
+                    delay_minutes=excluded.delay_minutes,
+                    status='pending',
+                    error=NULL,
+                    sent_at=NULL
+                WHERE alerts.status='error'
+                   OR (alerts.status='pending' AND alerts.check_id != excluded.check_id)""",
+                (check_id, recipient_chat_id, flight["flight_id"], flight.get("scheduled_departure") or "unknown", flight.get("delay_minutes") or 0, utcnow()))
             if cursor.rowcount == 1:
                 new_flights.append(flight)
         await self.db.commit()
         return new_flights
 
+    @_serialized_write
     async def finish_alerts(self, check_id: int, recipient_chat_id: int, flights: list[dict], *, sent: bool, error: str | None = None) -> None:
         status = "sent" if sent else "error"
         for flight in flights:

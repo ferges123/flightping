@@ -36,18 +36,20 @@ class AeroAPI:
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             return None, str(exc)
 
-    async def airport_timezone(self, airport: str, api_key: str) -> str | None:
-        """Return the IANA timezone for an airport when AeroAPI provides it."""
+    async def airport_timezone(self, airport: str, api_key: str) -> tuple[str | None, int | None, int, str | None]:
+        """Return airport timezone together with accounting data for this request."""
+        started = time.monotonic()
         try:
             response = await self.client.get(f"/airports/{airport}", headers={"x-apikey": api_key})
+            latency = int((time.monotonic() - started) * 1000)
             if response.status_code >= 400:
-                return None
+                return None, response.status_code, latency, f"AeroAPI returned HTTP {response.status_code}"
             payload = response.json()
-            return payload.get("timezone") or payload.get("time_zone")
-        except (httpx.HTTPError, ValueError):
-            return None
+            return payload.get("timezone") or payload.get("time_zone"), response.status_code, latency, None
+        except (httpx.HTTPError, ValueError) as exc:
+            return None, getattr(exc, "status_code", None), int((time.monotonic() - started) * 1000), str(exc)
 
-    async def scheduled_departures(self, airport: str, window_hours: int, api_key: str) -> tuple[list[dict], int | None, int, str | None, int]:
+    async def scheduled_departures(self, airport: str, window_hours: int, api_key: str, *, max_attempts: int = 4) -> tuple[list[dict], int | None, int, str | None, int]:
         start = datetime.now(timezone.utc).replace(microsecond=0)
         end = start + timedelta(hours=window_hours)
         endpoint = f"/airports/{airport}/flights/scheduled_departures"
@@ -61,7 +63,8 @@ class AeroAPI:
         retries = 0
         started = time.monotonic()
         last_error: Exception | None = None
-        for attempt in range(4):
+        max_attempts = max(1, min(4, max_attempts))
+        for attempt in range(max_attempts):
             try:
                 response = await self.client.get(endpoint, params=params, headers={"x-apikey": api_key})
                 if response.status_code < 400:
@@ -72,7 +75,7 @@ class AeroAPI:
                 detail = response.text[:500].replace("\n", " ")
                 last_error = AeroAPIError(f"AeroAPI returned HTTP {response.status_code}: {detail}", response.status_code)
                 retryable = response.status_code == 429 or response.status_code >= 500
-                if not retryable or attempt == 3:
+                if not retryable or attempt == max_attempts - 1:
                     break
                 retries += 1
                 retry_after = response.headers.get("retry-after")
@@ -83,7 +86,7 @@ class AeroAPI:
                 await asyncio.sleep(delay)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
-                if attempt == 3:
+                if attempt == max_attempts - 1:
                     break
                 retries += 1
                 await asyncio.sleep(min(8.0, 0.5 * (2 ** attempt)))

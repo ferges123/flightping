@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import aiosqlite
@@ -11,6 +12,9 @@ class Database:
     def __init__(self, path: Path):
         self.path = path
         self.conn: aiosqlite.Connection | None = None
+        # Repository writes can span several awaits.  They must not share one
+        # SQLite transaction with another coroutine using this connection.
+        self.write_lock = asyncio.Lock()
 
     async def connect(self) -> "Database":
         self.path.parent.mkdir(parents=True, exist_ok=True)

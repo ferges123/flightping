@@ -12,18 +12,30 @@ from .database import Database
 log = logging.getLogger(__name__)
 
 RETENTION_SQL = {
+    "alerts": "DELETE FROM alerts WHERE created_at < ?",
     "flight_observations": "DELETE FROM flight_observations WHERE observed_at < ?",
     "audit_events": "DELETE FROM audit_events WHERE created_at < ?",
     "api_requests": "DELETE FROM api_requests WHERE created_at < ?",
+    "monitor_subscriptions": """DELETE FROM monitor_subscriptions WHERE job_id IN (
+        SELECT id FROM monitor_jobs WHERE status='stopped' AND stopped_at < ?
+    )""",
+    "monitor_jobs": "DELETE FROM monitor_jobs WHERE status='stopped' AND stopped_at < ?",
+    "checks": """DELETE FROM checks WHERE finished_at < ?
+        AND NOT EXISTS (SELECT 1 FROM flight_observations WHERE check_id=checks.id)
+        AND NOT EXISTS (SELECT 1 FROM api_requests WHERE check_id=checks.id)
+        AND NOT EXISTS (SELECT 1 FROM alerts WHERE check_id=checks.id)""",
 }
 
 
 class Maintenance:
-    def __init__(self, db: Database, observation_days: int, audit_days: int, api_request_days: int, backup_dir: Path, backup_count: int = 3):
+    def __init__(self, db: Database, observation_days: int, audit_days: int, api_request_days: int, backup_dir: Path, backup_count: int = 3, check_days: int = 90, alert_days: int = 180, monitor_job_days: int = 30):
         self.db = db
         self.observation_days = observation_days
         self.audit_days = audit_days
         self.api_request_days = api_request_days
+        self.check_days = check_days
+        self.alert_days = alert_days
+        self.monitor_job_days = monitor_job_days
         self.backup_dir = backup_dir
         self.backup_count = backup_count
         self.wakeup = asyncio.Event()
@@ -66,17 +78,18 @@ class Maintenance:
 
     async def run_once(self) -> None:
         self.backup_dir.mkdir(parents=True, exist_ok=True)
-        await self._retain_data()
-        await self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        await self.db.commit()
-        backup_path = self.backup_dir / f"flightpingbot-{datetime.now(timezone.utc):%Y%m%d}.sqlite3"
-        if backup_path.exists():
-            backup_path.unlink()
-        target = await aiosqlite.connect(backup_path)
-        try:
-            await self.db.conn.backup(target)
-        finally:
-            await target.close()
+        async with self.db.write_lock:
+            await self._retain_data()
+            await self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            await self.db.commit()
+            backup_path = self.backup_dir / f"flightpingbot-{datetime.now(timezone.utc):%Y%m%d}.sqlite3"
+            if backup_path.exists():
+                backup_path.unlink()
+            target = await aiosqlite.connect(backup_path)
+            try:
+                await self.db.conn.backup(target)
+            finally:
+                await target.close()
         backup_path.chmod(0o600)
         await self._retain_backups()
 
@@ -88,9 +101,13 @@ class Maintenance:
     async def _retain_data(self) -> None:
         now = datetime.now(timezone.utc)
         cutoffs = {
+            "alerts": now - timedelta(days=self.alert_days),
             "flight_observations": now - timedelta(days=self.observation_days),
             "audit_events": now - timedelta(days=self.audit_days),
             "api_requests": now - timedelta(days=self.api_request_days),
+            "monitor_subscriptions": now - timedelta(days=self.monitor_job_days),
+            "monitor_jobs": now - timedelta(days=self.monitor_job_days),
+            "checks": now - timedelta(days=self.check_days),
         }
         for table, cutoff in cutoffs.items():
             await self.db.execute(RETENTION_SQL[table], (cutoff.isoformat(),))

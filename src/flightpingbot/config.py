@@ -36,6 +36,9 @@ class Settings:
     observation_retention_days: int = 7
     audit_retention_days: int = 180
     api_request_retention_days: int = 90
+    check_retention_days: int = 90
+    alert_retention_days: int = 180
+    monitor_job_retention_days: int = 30
     daily_api_request_limit: int = 0
     monthly_api_request_limit: int = 0
     usage_warning_percent: int = 80
@@ -44,7 +47,9 @@ class Settings:
     user_request_cooldown_seconds: int = 5
     telegram_messages_per_minute: int = 30
     fsm_state_ttl_seconds: int = 900
-    web_host: str = "192.168.2.111"
+    # Keep the application server private; expose it through the configured
+    # reverse proxy when remote access is required.
+    web_host: str = "127.0.0.1"
     web_port: int = 8080
 
     @property
@@ -89,6 +94,9 @@ class Settings:
             _int("FPB_FLIGHT_OBSERVATION_RETENTION_DAYS", 7, minimum=1),
             _int("FPB_AUDIT_RETENTION_DAYS", 180, minimum=1),
             _int("FPB_API_REQUEST_RETENTION_DAYS", 90, minimum=1),
+            _int("FPB_CHECK_RETENTION_DAYS", 90, minimum=1),
+            _int("FPB_ALERT_RETENTION_DAYS", 180, minimum=1),
+            _int("FPB_MONITOR_JOB_RETENTION_DAYS", 30, minimum=1),
             _int("FPB_DAILY_API_REQUEST_LIMIT", 0),
             _int("FPB_MONTHLY_API_REQUEST_LIMIT", 0),
             warning,
@@ -97,6 +105,6 @@ class Settings:
             _int("FPB_USER_REQUEST_COOLDOWN_SECONDS", 5),
             _int("FPB_TELEGRAM_MESSAGES_PER_MINUTE", 30, minimum=1),
             _int("FPB_FSM_STATE_TTL_SECONDS", 900, minimum=60),
-            os.getenv("FPB_WEB_HOST", "192.168.2.111").strip() or "192.168.2.111",
+            os.getenv("FPB_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
             _int("FPB_WEB_PORT", 8080, minimum=1),
         )

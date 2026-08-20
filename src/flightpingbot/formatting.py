@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .monitor import CheckResult
 from .errors import user_facing_error
@@ -12,9 +12,14 @@ from .errors import user_facing_error
 def _time(value: str | None, timezone_name: str) -> str:
     if not value:
         return "not available"
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    local = parsed.astimezone(ZoneInfo(timezone_name))
-    return f"{local:%Y-%m-%d %H:%M} {local.tzname()} ({parsed:%H:%M} UTC)"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local = parsed.astimezone(ZoneInfo(timezone_name))
+        return f"{local:%Y-%m-%d %H:%M} {local.tzname()} ({parsed:%H:%M} UTC)"
+    except (OverflowError, TypeError, ValueError, ZoneInfoNotFoundError):
+        return escape(str(value).replace("T", " ")[:64])
 
 
 def _airport(code: str | None, name: str | None) -> str:

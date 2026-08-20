@@ -38,7 +38,17 @@ async def run(settings: Settings) -> None:
     aeroapi = AeroAPI()
     service = FlightService(repo, aeroapi, settings.min_delay_minutes, settings.monitor_window_hours, settings.daily_api_request_limit, settings.monthly_api_request_limit, settings.user_request_cooldown_seconds)
     monitor = MonitorManager(service, repo, settings.monitor_interval_minutes, settings.monitor_duration_hours, settings.max_active_airports)
-    maintenance = Maintenance(db, settings.observation_retention_days, settings.audit_retention_days, settings.api_request_retention_days, settings.state_dir / "backups", backup_count=3)
+    maintenance = Maintenance(
+        db,
+        settings.observation_retention_days,
+        settings.audit_retention_days,
+        settings.api_request_retention_days,
+        settings.state_dir / "backups",
+        backup_count=3,
+        check_days=settings.check_retention_days,
+        alert_days=settings.alert_retention_days,
+        monitor_job_days=settings.monitor_job_retention_days,
+    )
     await maintenance.start()
     bot = Bot(settings.bot_token)
 
@@ -90,14 +100,19 @@ async def run(settings: Settings) -> None:
     )
     dispatcher.include_router(make_admin_router(auth, repo, bot, monitor))
     dispatcher.include_router(make_monitoring_router(auth, service, monitor))
+    polling_task = asyncio.create_task(dispatcher.start_polling(bot), name="flightping-polling")
     try:
-        await dispatcher.start_polling(bot)
+        done, _ = await asyncio.wait({web_task, polling_task}, return_when=asyncio.FIRST_COMPLETED)
+        # A stopped or failed web server must bring down the process so
+        # systemd can restart the complete application instead of leaving a
+        # functioning bot with a silently unavailable admin panel.
+        for task in done:
+            task.result()
     finally:
-        web_task.cancel()
-        try:
-            await web_task
-        except asyncio.CancelledError:
-            pass
+        for task in (web_task, polling_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(web_task, polling_task, return_exceptions=True)
         # Stop in-memory tasks without marking persisted monitors as stopped;
         # the next process start will restore them from SQLite.
         await monitor.stop_all(persist=False)

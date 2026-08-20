@@ -22,15 +22,15 @@ The bot includes a small server-rendered administrator panel. It has no
 background polling, WebSockets, frontend build step, or JSON API. Pages are
 refreshed only when opened, navigated, or explicitly refreshed.
 
-By default it listens on the local network address `192.168.2.111:8080`:
+By default it listens only on the local loopback address `127.0.0.1:8080`:
 
 ```text
-http://192.168.2.111:8080/
+http://127.0.0.1:8080/
 ```
 
 To change the bind address or port, set `FPB_WEB_HOST` and `FPB_WEB_PORT` in
-the environment file. Keep the panel on a trusted local network or protect it
-with an external access layer.
+the environment file. For remote access, keep the application bound to
+loopback and publish it through the Caddy reverse proxy.
 
 ## Requirements
 
@@ -86,7 +86,7 @@ The example configuration is available in [.env.example](/opt/flightping/.env.ex
 | `FPB_USER_REQUEST_COOLDOWN_SECONDS` | Minimum interval between manual user checks. |
 | `FPB_TELEGRAM_MESSAGES_PER_MINUTE` | Maximum inbound messages per user per minute; defaults to `30`. Administrators are exempt. |
 | `FPB_FSM_STATE_TTL_SECONDS` | Inactivity timeout for interactive input states; defaults to `900` seconds. |
-| `FPB_*_RETENTION_DAYS` | Retention periods for observations, audit events, and API request logs. Flight observations (the “Delayed flights found” view) are retained for 7 days by default. |
+| `FPB_*_RETENTION_DAYS` | Retention periods for observations, checks, alerts, audit events, API request logs, and stopped monitor jobs. Flight observations are retained for 7 days; checks for 90 days; alerts and audit events for 180 days; stopped jobs for 30 days by default. |
 
 ### Generate the Fernet key
 

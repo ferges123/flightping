@@ -5,11 +5,23 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from datetime import datetime, timedelta, timezone
 from html import escape
+import json
 
 from ..auth import Auth
 from ..repositories import Repository
 from ..keyboards import main_keyboard
 from ..onboarding import AEROAPI_SETUP_INSTRUCTIONS
+
+
+def _audit_actor_label(row) -> str:
+    """Render anonymous web-panel actions without impersonating an admin."""
+    if row["actor_user_id"] is not None:
+        return str(row["actor_user_id"])
+    try:
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        metadata = {}
+    return "web" if metadata.get("source") == "web" else "-"
 
 
 def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
@@ -237,7 +249,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if not rows:
             await message.answer("No audit events found.")
             return
-        lines = [f"{row['created_at']} user={row['actor_user_id'] or '-'} {row['action']} {row['object_type'] or ''} {row['object_id'] or ''}" for row in rows]
+        lines = [f"{row['created_at']} user={_audit_actor_label(row)} {row['action']} {row['object_type'] or ''} {row['object_id'] or ''}" for row in rows]
         chunks: list[str] = []
         current = ""
         for line in lines:

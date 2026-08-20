@@ -46,29 +46,56 @@ class FlightService:
             raise ValueError("The airport must be a three-letter IATA code.")
         airport = airport.upper()
         now = datetime.now(timezone.utc)
-        if self.daily_limit and await self.repo.api_request_count(now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id) >= self.daily_limit:
+        daily_used = await self.repo.api_request_count(now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id)
+        monthly_used = await self.repo.api_request_count(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id)
+        if self.daily_limit and daily_used >= self.daily_limit:
             raise RuntimeError("The daily AeroAPI request limit has been reached.")
-        if self.monthly_limit and await self.repo.api_request_count(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id) >= self.monthly_limit:
+        if self.monthly_limit and monthly_used >= self.monthly_limit:
             raise RuntimeError("The monthly AeroAPI request limit has been reached.")
         api_key = await self.repo.aeroapi_key(actor_user_id)
         if not api_key:
             raise RuntimeError("Configure your AeroAPI key first with /aeroapi.")
         await self._enforce_request_cooldown(actor_user_id)
         check_id = await self.repo.create_check(actor_user_id, airport, self.window_hours)
+        limits_remaining = [
+            self.daily_limit - daily_used if self.daily_limit else None,
+            self.monthly_limit - monthly_used if self.monthly_limit else None,
+        ]
+        remaining_attempts = min(limit for limit in limits_remaining if limit is not None) if any(limit is not None for limit in limits_remaining) else None
+        request_count = 0
         if airport not in self._airport_timezones:
             timezone_lookup = getattr(self.aeroapi, "airport_timezone", None)
-            self._airport_timezones[airport] = await timezone_lookup(airport, api_key) if timezone_lookup else None
+            # The timezone lookup improves presentation only. Reserve the last
+            # quota slot for the actual flight check instead of exceeding a cap.
+            if timezone_lookup and (remaining_attempts is None or remaining_attempts >= 2):
+                timezone_result = await timezone_lookup(airport, api_key)
+                if isinstance(timezone_result, tuple):
+                    airport_timezone, status, latency, timezone_error = timezone_result
+                    await self.repo.record_api_request(check_id, f"airports/{airport}", status, latency, error=timezone_error)
+                    request_count += 1
+                    if remaining_attempts is not None:
+                        remaining_attempts -= 1
+                else:
+                    # Compatibility with injected test/dummy clients.
+                    airport_timezone = timezone_result
+                self._airport_timezones[airport] = airport_timezone
+            else:
+                self._airport_timezones[airport] = None
         airport_timezone = self._airport_timezones[airport]
-        flights, status, latency, error, retries = await self.aeroapi.scheduled_departures(airport, self.window_hours, api_key)
+        flights, status, latency, error, retries = await self.aeroapi.scheduled_departures(
+            airport,
+            self.window_hours,
+            api_key,
+            max_attempts=remaining_attempts if remaining_attempts is not None else 4,
+        )
         for flight in flights:
             flight.setdefault("origin_timezone", airport_timezone)
         if status in {401, 403}:
             await self.repo.mark_aeroapi_key_invalid(actor_user_id)
         await self.repo.record_api_request(check_id, f"airports/{airport}/flights/scheduled_departures", status, latency, retry_number=retries, error=error)
-        for flight in flights:
-            await self.repo.record_observation(check_id, flight, self.min_delay_minutes)
+        await self.repo.record_observations(check_id, flights, self.min_delay_minutes)
         delayed = [flight for flight in flights if (flight.get("delay_minutes") or 0) >= self.min_delay_minutes]
-        await self.repo.finish_check(check_id, status="error" if error else "completed", request_count=1, flight_count=len(flights), delayed_count=len(delayed), error=error)
+        await self.repo.finish_check(check_id, status="error" if error else "completed", request_count=request_count + retries + 1, flight_count=len(flights), delayed_count=len(delayed), error=error)
         return CheckResult(check_id, airport, flights, delayed, error, self.min_delay_minutes)
 
     async def test_aeroapi(self, actor_user_id: int) -> int:

@@ -6,8 +6,11 @@ import pytest
 from flightpingbot.auth import Auth
 from flightpingbot.config import Settings
 from flightpingbot.handlers.admin import make_router as make_admin_router
+from flightpingbot.handlers.admin import _audit_actor_label
 from flightpingbot.handlers.monitoring import make_router as make_monitoring_router
 from flightpingbot.errors import user_facing_error
+from flightpingbot.formatting import format_check
+from flightpingbot.monitor import CheckResult
 
 
 class FakeRepo:
@@ -26,6 +29,9 @@ class FakeRepo:
     async def set_user_status(self, user_id, status):
         self.status = status
         return True
+
+    async def remove_aeroapi_key(self, user_id):
+        return False
 
 
 class FakeMessage:
@@ -201,3 +207,32 @@ async def test_key_handler_warns_when_telegram_delete_fails(tmp_path):
 
 def test_upstream_errors_are_user_friendly():
     assert user_facing_error(RuntimeError("AeroAPI returned HTTP 500: outage")) == "AeroAPI is temporarily unavailable. Please try again later."
+
+
+def test_audit_labels_anonymous_web_actions():
+    assert _audit_actor_label({"actor_user_id": None, "metadata_json": '{"source":"web"}'}) == "web"
+    assert _audit_actor_label({"actor_user_id": 100, "metadata_json": None}) == "100"
+
+
+@pytest.mark.asyncio
+async def test_aeroapi_remove_explains_when_no_key_exists(tmp_path):
+    router = make_monitoring_router(auth(tmp_path), FakeService(), FakeMonitor())
+    handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "aeroapi_command")
+    message = FakeMessage(100, "/aeroapi remove")
+    await handler(message, None)
+    assert message.answers == ["ℹ️ No AeroAPI key was configured."]
+
+
+def test_format_check_tolerates_invalid_upstream_time_data():
+    result = CheckResult(1, "WAW", [], [{
+        "flight_id": "W61234",
+        "origin": "WAW",
+        "destination": "TFS",
+        "scheduled_departure": "not-a-time",
+        "estimated_departure": "<invalid>",
+        "origin_timezone": "not/a-timezone",
+        "delay_minutes": 90,
+    }])
+    rendered = format_check(result)
+    assert "not-a-time" in rendered
+    assert "&lt;invalid&gt;" in rendered

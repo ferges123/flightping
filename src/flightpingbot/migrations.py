@@ -138,16 +138,35 @@ MIGRATIONS = [
     ALTER TABLE flight_observations ADD COLUMN origin_timezone TEXT;
     ALTER TABLE flight_observations ADD COLUMN destination_timezone TEXT;
     """,
+    """
+    CREATE INDEX api_requests_created_at ON api_requests(created_at);
+    CREATE INDEX flight_observations_observed_at ON flight_observations(observed_at);
+    CREATE INDEX delayed_flight_observations_latest
+      ON flight_observations(flight_id, scheduled_departure, id DESC)
+      WHERE above_threshold=1;
+    CREATE INDEX alerts_created_at ON alerts(created_at);
+    CREATE INDEX stopped_monitor_jobs_stopped_at
+      ON monitor_jobs(stopped_at) WHERE status='stopped';
+    """,
 ]
 
 
 async def migrate(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    await db.commit()
     row = await (await db.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")).fetchone()
     current = row[0]
     for version, sql in enumerate(MIGRATIONS, 1):
         if version <= current:
             continue
-        await db.executescript(sql)
-        await db.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))", (version,))
-        await db.commit()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            # sqlite3.executescript() commits before executing its script, so
+            # execute each DDL statement inside the migration transaction.
+            for statement in (part.strip() for part in sql.split(";") if part.strip()):
+                await db.execute(statement)
+            await db.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, datetime('now'))", (version,))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
