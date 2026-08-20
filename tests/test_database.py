@@ -38,3 +38,31 @@ async def test_migration_and_duplicate_access_request(tmp_path):
         assert alert["status"] == "sent"
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_delayed_observations_returns_only_latest_observation_per_flight(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        flight = {
+            "flight_id": "W61589",
+            "origin": "WAW",
+            "destination": "MLA",
+            "scheduled_departure": "2026-08-19T14:15:00+00:00",
+            "estimated_departure": "2026-08-19T15:15:00+00:00",
+            "delay_minutes": 60,
+        }
+        first_check = await repo.create_check(100, "WAW", 9)
+        await repo.record_observation(first_check, flight, threshold=60)
+        latest_check = await repo.create_check(100, "WAW", 9)
+        flight["delay_minutes"] = 90
+        await repo.record_observation(latest_check, flight, threshold=60)
+
+        rows = await repo.delayed_observations()
+
+        assert len(rows) == 1
+        assert rows[0]["check_id"] == latest_check
+        assert rows[0]["delay_minutes"] == 90
+    finally:
+        await db.close()

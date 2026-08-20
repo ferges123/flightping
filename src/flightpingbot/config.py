@@ -33,13 +33,13 @@ class Settings:
     monitor_duration_hours: int = 6
     min_delay_minutes: int = 60
     max_active_airports: int = 3
-    observation_retention_days: int = 30
+    observation_retention_days: int = 7
     audit_retention_days: int = 180
     api_request_retention_days: int = 90
     daily_api_request_limit: int = 0
     monthly_api_request_limit: int = 0
     usage_warning_percent: int = 80
-    timezone_name: str = "Atlantic/Canary"
+    timezone_name: str = "Europe/Warsaw"
     credentials_key: str = ""
     user_request_cooldown_seconds: int = 5
     telegram_messages_per_minute: int = 30
@@ -74,7 +74,7 @@ class Settings:
         warning = _int("FPB_USAGE_WARNING_PERCENT", 80)
         if warning > 100:
             raise ConfigError("FPB_USAGE_WARNING_PERCENT must be <= 100")
-        timezone_name = os.getenv("FPB_TIMEZONE", "Atlantic/Canary").strip()
+        timezone_name = os.getenv("FPB_TIMEZONE", "Europe/Warsaw").strip()
         try:
             ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError as exc:
@@ -86,7 +86,7 @@ class Settings:
             _int("FPB_MONITOR_DURATION_HOURS", 6, minimum=1),
             _int("FPB_MIN_DELAY_MINUTES", 60),
             _int("FPB_MAX_ACTIVE_AIRPORTS", 3, minimum=1),
-            _int("FPB_FLIGHT_OBSERVATION_RETENTION_DAYS", 30, minimum=1),
+            _int("FPB_FLIGHT_OBSERVATION_RETENTION_DAYS", 7, minimum=1),
             _int("FPB_AUDIT_RETENTION_DAYS", 180, minimum=1),
             _int("FPB_API_REQUEST_RETENTION_DAYS", 90, minimum=1),
             _int("FPB_DAILY_API_REQUEST_LIMIT", 0),

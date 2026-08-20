@@ -86,7 +86,7 @@ The example configuration is available in [.env.example](/opt/flightping/.env.ex
 | `FPB_USER_REQUEST_COOLDOWN_SECONDS` | Minimum interval between manual user checks. |
 | `FPB_TELEGRAM_MESSAGES_PER_MINUTE` | Maximum inbound messages per user per minute; defaults to `30`. Administrators are exempt. |
 | `FPB_FSM_STATE_TTL_SECONDS` | Inactivity timeout for interactive input states; defaults to `900` seconds. |
-| `FPB_*_RETENTION_DAYS` | Retention periods for observations, audit events, and API request logs. |
+| `FPB_*_RETENTION_DAYS` | Retention periods for observations, audit events, and API request logs. Flight observations (the “Delayed flights found” view) are retained for 7 days by default. |
 
 ### Generate the Fernet key
 

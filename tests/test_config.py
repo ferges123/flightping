@@ -18,3 +18,4 @@ def test_config_parses_admins(monkeypatch, tmp_path):
     settings = Settings.from_env()
     assert settings.admin_user_ids == frozenset({123, 456})
     assert settings.database_path == tmp_path / "flightpingbot.sqlite3"
+    assert settings.observation_retention_days == 7

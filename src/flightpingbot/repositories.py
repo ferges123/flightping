@@ -165,8 +165,12 @@ class Repository:
     async def delayed_observations(self, limit: int = 100):
         return await (await self.db.execute(
             """SELECT o.*, c.airport FROM flight_observations o
+               JOIN (
+                   SELECT MAX(id) AS id FROM flight_observations
+                   WHERE above_threshold=1
+                   GROUP BY flight_id, scheduled_departure
+               ) latest ON latest.id=o.id
                JOIN checks c ON c.id=o.check_id
-               WHERE o.above_threshold=1
                ORDER BY o.id DESC LIMIT ?""",
             (limit,),
         )).fetchall()

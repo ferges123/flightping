@@ -3,18 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from aiogram.enums import ParseMode
 from starlette.applications import Starlette
 from starlette.responses import FileResponse, HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
-from .formatting import flightaware_url
+from .formatting import flightaware_url, format_check
 
 
 CSS = """
-:root { color-scheme: light; font-family: system-ui, sans-serif; }
-body { margin: 0; background: #f4f6f8; color: #17212b; }
+:root { color-scheme: light; font-family: system-ui, sans-serif; scrollbar-gutter: stable; }
+body { margin: 0; overflow-y: scroll; background: #f4f6f8; color: #17212b; }
 header { background: #17212b; color: white; padding: .65rem max(1rem, calc((100% - 1100px)/2)); }
 .brand { display: inline-flex; align-items: center; gap: .55rem; margin-right: 1.25rem; }
 .brand img { width: 42px; height: 42px; object-fit: cover; border-radius: 50%; background: white; vertical-align: middle; }
@@ -30,7 +32,14 @@ th { background: #f8fafb; font-size: .85rem; } tr:last-child td { border-bottom:
 button { border: 0; border-radius: 5px; padding: .4rem .65rem; cursor: pointer; background: #1769aa; color: white; }
 button.danger { background: #b42318; } button.secondary { background: #687582; }
 form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
-@media (max-width: 650px) { table { display: block; overflow-x: auto; white-space: nowrap; } }
+.monitor-form { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, .55fr) auto; gap: .85rem; align-items: end; margin: .75rem 0 1.5rem; padding: 1rem; background: white; border: 1px solid #dce2e7; border-radius: 8px; box-shadow: 0 1px 2px rgb(23 33 43 / 4%); }
+.monitor-form__heading { grid-column: 1 / -1; margin: 0; font-size: 1rem; }
+.monitor-form label { display: grid; gap: .35rem; color: #465360; font-size: .85rem; font-weight: 600; }
+.monitor-form input, .monitor-form select { box-sizing: border-box; width: 100%; height: 2.55rem; padding: .45rem .65rem; color: #17212b; background: #fff; border: 1px solid #bcc6d0; border-radius: 5px; font: inherit; }
+.monitor-form input:focus, .monitor-form select:focus { outline: 2px solid rgb(23 105 170 / 25%); border-color: #1769aa; }
+.monitor-form button { height: 2.55rem; padding: .45rem 1rem; white-space: nowrap; }
+.notice { margin: .75rem 0; padding: .65rem .8rem; color: #155724; background: #edf8ef; border: 1px solid #c8e6cc; border-radius: 6px; }
+@media (max-width: 650px) { table { display: block; overflow-x: auto; white-space: nowrap; } .monitor-form { grid-template-columns: 1fr; } .monitor-form button { width: 100%; } }
 """
 
 
@@ -79,6 +88,7 @@ class WebPanel:
             Route("/users", self.users),
             Route("/history", self.history),
             Route("/successes", self.successes),
+            Route("/actions/monitor/start", self.start_monitor, methods=["POST"]),
             Route("/actions/monitor/{user_id:int}/{airport}/stop", self.stop_monitor, methods=["POST"]),
             Route("/actions/access/{request_id:int}/{decision}", self.access_decision, methods=["POST"]),
             Route("/actions/user/{user_id:int}/{status}", self.user_status, methods=["POST"]),
@@ -90,7 +100,7 @@ class WebPanel:
         return FileResponse(logo_path, media_type="image/jpeg")
 
     def page(self, title: str, body: str, refresh_path: str = "/") -> HTMLResponse:
-        now = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(timezone.utc).astimezone(ZoneInfo(self.timezone_name)).strftime("%Y-%m-%d %H:%M:%S %Z")
         html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Dashboard</a><a href='/monitoring'>Monitoring</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delayed flights</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
         return HTMLResponse(html)
 
@@ -110,7 +120,17 @@ class WebPanel:
 
     async def monitoring(self, request):
         rows = await self.repo.active_monitor_jobs()
-        body = "<h1>Active monitoring</h1><table><tr><th>Airport</th><th>User</th><th>Interval</th><th>Started</th><th>Valid until</th><th>Action</th></tr>"
+        users = await self.repo.list_users(status="approved")
+        notice = request.query_params.get("notice")
+        body = "<h1>Active monitoring</h1>"
+        if notice:
+            body += f"<p class='notice'>{_e(notice)}</p>"
+        body += "<form class='monitor-form' method='post' action='/actions/monitor/start'><h2 class='monitor-form__heading'>Add monitoring</h2><label>User<select name='user_id' required>"
+        for user in users:
+            label = user["username"] and f"@{user['username']}" or user["display_name"]
+            body += f"<option value='{user['telegram_user_id']}'>{_e(label)} ({user['telegram_user_id']})</option>"
+        body += "</select></label><label>Airport (IATA)<input name='airport' type='text' minlength='3' maxlength='3' pattern='[A-Za-z]{3}' placeholder='WAW' required></label><button type='submit'>Add monitoring</button></form>"
+        body += "<table><tr><th>Airport</th><th>User</th><th>Interval</th><th>Started</th><th>Valid until</th><th>Action</th></tr>"
         for row in rows:
             action = f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
             valid_until = _add_duration(row["started_at"], self.monitor.duration) if self.monitor else None
@@ -149,7 +169,7 @@ class WebPanel:
 
     async def successes(self, request):
         rows = await self.repo.delayed_observations(limit=100)
-        body = "<h1>Delayed flights found</h1><p class='muted'>Flights found above the configured delay threshold. Scheduled and estimated times use the origin airport's local time, with UTC in parentheses.</p><table><tr><th>Flight</th><th>Airport</th><th>Route</th><th>Scheduled (local / UTC)</th><th>Estimated (local / UTC)</th><th>Delay</th><th>Found</th></tr>"
+        body = "<h1>Delayed flights found</h1><p class='muted'>Latest observation for each delayed flight. Scheduled and estimated times use the origin airport's local time, with UTC in parentheses.</p><table><tr><th>Flight</th><th>Airport</th><th>Route</th><th>Scheduled (local / UTC)</th><th>Estimated (local / UTC)</th><th>Delay</th><th>Found</th></tr>"
         for row in rows:
             link = escape(flightaware_url(row['flightaware_id'] or row['flight_id']), quote=True)
             route = f"{_e(row['origin'] or '?')} → {_e(row['destination'] or '?')}"
@@ -164,6 +184,28 @@ class WebPanel:
         if await self.monitor.stop_user_airport(user_id, airport):
             await self.repo.audit(next(iter(self.admin_ids)), "monitor_stop", "monitor", airport, {"user_id": user_id, "source": "web"})
         return RedirectResponse("/monitoring", status_code=303)
+
+    async def start_monitor(self, request):
+        form = parse_qs((await request.body()).decode(), keep_blank_values=True)
+        try:
+            user_id = int(form.get("user_id", [""])[0])
+            airport = form.get("airport", [""])[0]
+            user = await self.repo.user(user_id)
+            if not user or user["status"] != "approved":
+                raise ValueError("Choose an approved user.")
+
+            async def notify(result):
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name), parse_mode=ParseMode.HTML)
+
+            status = await self.monitor.start(user_id, user["chat_id"], airport, notify)
+            notice = {
+                "started": f"Monitoring for {airport.strip().upper()} was added.",
+                "subscribed": f"The user was subscribed to {airport.strip().upper()}.",
+                "already_subscribed": f"Monitoring for {airport.strip().upper()} already exists.",
+            }[status]
+        except (TypeError, ValueError) as exc:
+            notice = str(exc) or "Could not add monitoring."
+        return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
 
     async def access_decision(self, request):
         request_id = int(request.path_params["request_id"])
