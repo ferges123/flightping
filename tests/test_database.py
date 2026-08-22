@@ -31,6 +31,9 @@ async def test_migration_and_duplicate_access_request(tmp_path):
         await repo.recover_monitors_after_restart()
         recovered = await (await db.execute("SELECT status FROM monitor_jobs WHERE id=?", (job_id,))).fetchone()
         assert recovered["status"] == "stopped"
+        jobs = await repo.monitor_jobs()
+        assert [job["id"] for job in jobs] == [job_id]
+        assert (await repo.monitor_job(job_id))["status"] == "stopped"
         check_id = await repo.create_check(200, "TFS", 9)
         flight = {"flight_id": "EWG253", "scheduled_departure": "2026-08-18T17:00:00Z", "delay_minutes": 100}
         assert await repo.claim_new_alerts(check_id, 200, [flight]) == [flight]

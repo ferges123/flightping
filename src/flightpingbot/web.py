@@ -90,6 +90,7 @@ class WebPanel:
             Route("/successes", self.successes),
             Route("/actions/monitor/start", self.start_monitor, methods=["POST"]),
             Route("/actions/monitor/{user_id:int}/{airport}/stop", self.stop_monitor, methods=["POST"]),
+            Route("/actions/monitor/{job_id:int}/remonitor", self.remonitor, methods=["POST"]),
             Route("/actions/access/{request_id:int}/{decision}", self.access_decision, methods=["POST"]),
             Route("/actions/user/{user_id:int}/{status}", self.user_status, methods=["POST"]),
         ]
@@ -119,7 +120,7 @@ class WebPanel:
         return self.page("Start", body, request.url.path)
 
     async def monitoring(self, request):
-        rows = await self.repo.active_monitor_jobs()
+        rows = await self.repo.monitor_jobs()
         users = await self.repo.list_users(status="approved")
         notice = request.query_params.get("notice")
         body = "<h1>Active monitoring</h1>"
@@ -130,12 +131,19 @@ class WebPanel:
             label = user["username"] and f"@{user['username']}" or user["display_name"]
             body += f"<option value='{user['telegram_user_id']}'>{_e(label)} ({user['telegram_user_id']})</option>"
         body += "</select></label><label>Airport (IATA)<input name='airport' type='text' minlength='3' maxlength='3' pattern='[A-Za-z]{3}' placeholder='WAW' required></label><button type='submit'>Add monitoring</button></form>"
-        body += "<table><tr><th>Airport</th><th>User</th><th>Interval</th><th>Started</th><th>Valid until</th><th>Action</th></tr>"
+        body += "<table><tr><th>Airport</th><th>User</th><th>Status</th><th>Interval</th><th>Started</th><th>Ended</th><th>Valid until</th><th>Action</th></tr>"
         for row in rows:
-            action = f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
+            is_active = row["status"] == "active"
+            action = (
+                f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
+                if is_active
+                else f"<form method='post' action='/actions/monitor/{row['id']}/remonitor'><button>Remonitor</button></form>"
+            )
             valid_until = _add_duration(row["started_at"], self.monitor.duration) if self.monitor else None
-            body += f"<tr><td><b>{_e(row['airport'])}</b></td><td>{row['actor_user_id']}</td><td>{row['interval_minutes']} min</td><td>{_time(row['started_at'], self.timezone_name)}</td><td>{_time(valid_until, self.timezone_name)}</td><td>{action}</td></tr>"
-        body += "</table>" if rows else "<p>No active monitors.</p>"
+            status = "Active" if is_active else "Finished"
+            ended_at = "—" if is_active else _time(row["stopped_at"], self.timezone_name)
+            body += f"<tr><td><b>{_e(row['airport'])}</b></td><td>{row['actor_user_id']}</td><td>{status}</td><td>{row['interval_minutes']} min</td><td>{_time(row['started_at'], self.timezone_name)}</td><td>{ended_at}</td><td>{_time(valid_until, self.timezone_name)}</td><td>{action}</td></tr>"
+        body += "</table>" if rows else "<p>No monitoring jobs found.</p>"
         return self.page("Monitoring", body, request.url.path)
 
     async def users(self, request):
@@ -205,6 +213,32 @@ class WebPanel:
             }[status]
         except (TypeError, ValueError) as exc:
             notice = str(exc) or "Could not add monitoring."
+        return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
+
+    async def remonitor(self, request):
+        job_id = int(request.path_params["job_id"])
+        try:
+            previous = await self.repo.monitor_job(job_id)
+            if not previous or previous["status"] != "stopped":
+                raise ValueError("This monitoring job is no longer available to restart.")
+            user = await self.repo.user(previous["actor_user_id"])
+            if not user or user["status"] != "approved":
+                raise ValueError("The monitoring owner is no longer an approved user.")
+
+            async def notify(result):
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name), parse_mode=ParseMode.HTML)
+
+            airport = previous["airport"]
+            status = await self.monitor.start(user["telegram_user_id"], user["chat_id"], airport, notify)
+            if status == "started":
+                await self.repo.audit(None, "monitor_remonitor", "monitor", str(job_id), {"user_id": user["telegram_user_id"], "airport": airport, "source": "web"})
+            notice = {
+                "started": f"Monitoring for {airport} was restarted.",
+                "subscribed": f"The user was subscribed to {airport}.",
+                "already_subscribed": f"Monitoring for {airport} is already active.",
+            }[status]
+        except (TypeError, ValueError, RuntimeError) as exc:
+            notice = str(exc) or "Could not restart monitoring."
         return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
 
     async def access_decision(self, request):

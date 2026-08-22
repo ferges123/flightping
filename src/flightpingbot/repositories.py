@@ -273,6 +273,17 @@ class Repository:
             FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id
             WHERE j.status='active' ORDER BY j.id""")).fetchall()
 
+    async def monitor_jobs(self):
+        """Return active and finished monitoring jobs for the admin panel."""
+        return await (await self.db.execute("""SELECT * FROM monitor_jobs
+            ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,
+                     COALESCE(stopped_at, started_at) DESC, id DESC""")).fetchall()
+
+    async def monitor_job(self, job_id: int):
+        return await (await self.db.execute(
+            "SELECT * FROM monitor_jobs WHERE id=?", (job_id,)
+        )).fetchone()
+
     @_serialized_write
     async def recover_monitors_after_restart(self) -> None:
         """Stop persisted monitor rows whose owners no longer have access."""
