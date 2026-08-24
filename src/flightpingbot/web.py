@@ -321,7 +321,9 @@ class WebPanel:
                 raise ValueError("Choose an approved user.")
 
             async def notify(result):
-                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name), parse_mode=ParseMode.HTML)
+                saved = await self.repo.user_settings(user_id)
+                language = saved["language"] if saved else "en"
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML)
 
             status = await self.monitor.start(user_id, user["chat_id"], airport, notify)
             notice = {
@@ -344,7 +346,9 @@ class WebPanel:
                 raise ValueError("The monitoring owner is no longer an approved user.")
 
             async def notify(result):
-                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name), parse_mode=ParseMode.HTML)
+                saved = await self.repo.user_settings(user["telegram_user_id"])
+                language = saved["language"] if saved else "en"
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML)
 
             airport = previous["airport"]
             status = await self.monitor.start(user["telegram_user_id"], user["chat_id"], airport, notify)

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from aiogram.exceptions import TelegramForbiddenError, TelegramNotFound, TelegramRetryAfter
 
 from .aeroapi import AeroAPI
-from .errors import MissingApiKeyError, RateLimited
+from .errors import AEROAPI_KEY_REJECTED_MESSAGE, MissingApiKeyError, RateLimited
 from .repositories import Repository
 from .statuses import CheckStatus
 
@@ -288,7 +288,7 @@ class MonitorManager:
             airport=state.airport,
             flights=[],
             delayed=[],
-            error="AeroAPI authorization failed. Please replace your key with /aeroapi.",
+            error=AEROAPI_KEY_REJECTED_MESSAGE,
         )
         for (user_id, chat_id), notify in list(state.callbacks.items()):
             try:

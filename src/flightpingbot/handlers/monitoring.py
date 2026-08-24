@@ -338,8 +338,12 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             await message.answer(t("en", "no_access"))
             return
         language, _ = await preferences(message.from_user.id)
+        # Capture the airports before stopping: after stop_user() the registry
+        # no longer holds this user's jobs (and its property is global anyway).
+        jobs = await service.repo.user_monitor_jobs(message.from_user.id, message.chat.id)
+        airports = ", ".join(row["airport"] for row in jobs)
         changed = await monitor.stop_user(message.from_user.id, message.chat.id)
-        await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
+        await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airports)
         await message.answer(t(language, "monitors_stopped" if changed else "monitors_missing"))
 
     @router.message(F.text.in_(button_texts("btn_stop")), F.chat.type == "private")

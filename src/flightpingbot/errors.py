@@ -23,6 +23,9 @@ class InvalidApiKeyFormat(ValueError):
         super().__init__("The AeroAPI key must contain only ASCII characters and no spaces.")
 
 
+AEROAPI_KEY_REJECTED_MESSAGE = "AeroAPI authorization failed. Please replace your key with /aeroapi."
+
+
 def user_facing_error(exc: Exception, language: str = "en") -> str:
     """Turn upstream/application exceptions into short Telegram-safe text."""
     pl = language == "pl"
@@ -33,6 +36,8 @@ def user_facing_error(exc: Exception, language: str = "en") -> str:
     if isinstance(exc, InvalidApiKeyFormat):
         return "Klucz AeroAPI zawiera nieprawidłowe znaki. Ustaw go ponownie przez /aeroapi." if pl else str(exc)
     message = str(exc).lower()
+    if message.startswith("aeroapi authorization failed"):
+        return "Autoryzacja AeroAPI nie powiodła się. Podmień klucz przez /aeroapi." if pl else str(exc)
     if isinstance(exc, AeroAPIError) or message.startswith("aeroapi returned http"):
         status_code = exc.status_code if isinstance(exc, AeroAPIError) else None
         if status_code is None:

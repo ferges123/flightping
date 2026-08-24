@@ -16,12 +16,18 @@ from flightpingbot.monitor import CheckResult
 class FakeRepo:
     def __init__(self, status=None):
         self.status = status
+        self.audit_calls = []
+        self.monitor_airports = ["TFS", "WAW"]
 
     async def user(self, user_id):
         return {"status": self.status} if self.status else None
 
     async def audit(self, *args, **kwargs):
+        self.audit_calls.append(args)
         return None
+
+    async def user_monitor_jobs(self, user_id, chat_id):
+        return [{"airport": code} for code in self.monitor_airports]
 
     async def usage(self, since, actor_user_id=None):
         return {"total": 2, "success": 1, "errors": 1, "retries": 0}
@@ -199,15 +205,21 @@ async def test_admin_revocation_stops_user_monitor(tmp_path):
 
 @pytest.mark.asyncio
 async def test_stop_button_stops_all_monitors_without_parsing_button_text_as_an_airport(tmp_path):
-    approved_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), FakeRepo())
+    repo = FakeRepo(status="approved")
+    service = FakeService()
+    service.repo = repo
+    approved_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), repo)
     monitor = FakeMonitor()
-    router = make_monitoring_router(approved_auth, FakeService(), monitor)
+    router = make_monitoring_router(approved_auth, service, monitor)
     handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "stop_monitor_button")
 
     message = FakeMessage(100, "⏹ Stop")
     await handler(message)
 
     assert monitor.stopped_user_chats == [(100, 100)]
+    # The audit entry lists the airports captured before stopping — not the
+    # global registry property read afterwards (empty here).
+    assert repo.audit_calls[-1][3] == "TFS, WAW"
 
 
 @pytest.mark.asyncio

@@ -197,6 +197,32 @@ async def test_remonitor_action_restarts_a_stopped_job(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_panel_monitor_notifications_follow_the_user_language(tmp_path):
+    from flightpingbot.monitor import CheckResult
+
+    repo = await _make_repo(tmp_path)
+    await repo.update_user_settings(200, language="pl")
+
+    class NotifyingStub(StubMonitor):
+        async def start(self, actor_user_id, chat_id, airport, notify):
+            self.started.append((actor_user_id, airport))
+            await notify(CheckResult(check_id=1, airport=airport, flights=[], delayed=[]))
+            return "started"
+
+    bot = StubBot()
+    panel = WebPanel(repo, NotifyingStub("started"), bot, frozenset({100}))
+
+    try:
+        async with _client(panel) as client:
+            response = await client.post("/actions/monitor/start", data={"user_id": "200", "airport": "TFS"})
+            await response.aread()
+    finally:
+        await repo.db.close()
+
+    assert bot.sent and "nie znaleziono dużych opóźnień" in bot.sent[0][1]
+
+
+@pytest.mark.asyncio
 async def test_user_status_action_blocks_user_and_stops_monitors(tmp_path):
     repo = await _make_repo(tmp_path)
     monitor = StubMonitor()

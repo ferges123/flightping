@@ -1,6 +1,6 @@
 import pytest
 
-from flightpingbot.errors import InvalidApiKeyFormat, MissingApiKeyError, RateLimited, user_facing_error
+from flightpingbot.errors import AEROAPI_KEY_REJECTED_MESSAGE, InvalidApiKeyFormat, MissingApiKeyError, RateLimited, user_facing_error
 
 
 def test_rate_limited_carries_retry_after_and_message():
@@ -25,3 +25,9 @@ def test_user_facing_error_uses_exception_types_not_message_sniffing():
     # be mistaken for the key-format error.
     decoy = RuntimeError("ascii art encode failed")
     assert "AeroAPI key" not in user_facing_error(decoy)
+
+
+def test_key_rejected_message_is_localized_for_monitor_notifications():
+    wrapped = RuntimeError(AEROAPI_KEY_REJECTED_MESSAGE)
+    assert user_facing_error(wrapped) == AEROAPI_KEY_REJECTED_MESSAGE
+    assert user_facing_error(wrapped, "pl") == "Autoryzacja AeroAPI nie powiodła się. Podmień klucz przez /aeroapi."
