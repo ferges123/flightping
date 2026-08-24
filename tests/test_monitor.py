@@ -1,8 +1,10 @@
 import asyncio
 
 import pytest
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 
 from flightpingbot.monitor import CheckResult, FlightService, MonitorManager, _JobState
+from flightpingbot.statuses import CheckStatus
 
 
 class FakeRepo:
@@ -118,3 +120,151 @@ async def test_check_flags_auth_failure_from_status_code_not_error_text():
 
     assert result.auth_failed is True
     assert result.error == "AeroAPI returned HTTP 401: nope"
+
+
+class SlowAero:
+    async def scheduled_departures(self, airport, window_hours, api_key, *, max_attempts=4):
+        await asyncio.sleep(30)
+        return [], None, 0, None, 0
+
+
+@pytest.mark.asyncio
+async def test_check_finalizes_as_cancelled_when_task_is_cancelled():
+    finished = []
+
+    class RepoStub:
+        async def api_request_count(self, since, user_id):
+            return 0
+
+        async def aeroapi_key(self, user_id):
+            return "secret"
+
+        async def create_check(self, actor, airport, window_hours):
+            return 1
+
+        async def record_api_request(self, *args, **kwargs):
+            pass
+
+        async def record_observations(self, *args, **kwargs):
+            pass
+
+        async def mark_aeroapi_key_invalid(self, user_id):
+            pass
+
+        async def finish_check(self, check_id, *, status, **kwargs):
+            finished.append(status)
+
+    service = FlightService(RepoStub(), SlowAero(), min_delay_minutes=60, window_hours=9)
+    task = asyncio.create_task(service.check(200, "TFS"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished == [CheckStatus.CANCELLED]
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_an_in_flight_cycle_immediately():
+    repo = FakeRepo()
+
+    class BlockingService:
+        window_hours = 9
+        min_delay_minutes = 60
+
+        async def check(self, actor_user_id, airport, **kwargs):
+            await asyncio.sleep(30)
+
+    monitor = MonitorManager(BlockingService(), repo, interval_minutes=30, duration_hours=1)
+    await monitor.start(100, 100, "TFS", lambda result: None)
+    await asyncio.sleep(0.05)
+    await asyncio.wait_for(monitor.stop_user(100, 100), timeout=2)
+
+    assert not monitor.jobs
+    assert repo.stopped
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_is_fast_and_does_not_persist():
+    repo = FakeRepo()
+
+    class BlockingService:
+        window_hours = 9
+        min_delay_minutes = 60
+
+        async def check(self, actor_user_id, airport, **kwargs):
+            await asyncio.sleep(30)
+
+    monitor = MonitorManager(BlockingService(), repo, interval_minutes=30, duration_hours=1)
+    await monitor.start(100, 100, "TFS", lambda result: None)
+    await asyncio.sleep(0.05)
+    await asyncio.wait_for(monitor.cancel_all(), timeout=2)
+
+    assert not monitor.jobs
+    assert repo.stopped == []
+
+
+class AlertRepo(FakeRepo):
+    def __init__(self):
+        super().__init__()
+        self.removed_subscriptions = []
+        self.alert_outcomes = []
+        self.claims = 0
+
+    async def claim_new_alerts(self, check_id, chat_id, flights):
+        self.claims += 1
+        return list(flights) if self.claims == 1 else []
+
+    async def remove_subscription(self, job_id, user_id, chat_id):
+        self.removed_subscriptions.append((job_id, user_id, chat_id))
+        return True
+
+    async def finish_alerts(self, check_id, chat_id, flights, *, sent, error=None):
+        self.alert_outcomes.append((sent, error))
+
+
+class AlertService:
+    window_hours = 9
+    min_delay_minutes = 60
+
+    def __init__(self, delayed):
+        self.delayed = delayed
+
+    async def check(self, actor_user_id, airport, **kwargs):
+        return CheckResult(check_id=1, airport=airport, flights=self.delayed, delayed=self.delayed)
+
+
+@pytest.mark.asyncio
+async def test_blocked_chat_drops_subscription_and_ends_job():
+    repo = AlertRepo()
+    delayed = [{"flight_id": "LO123", "scheduled_departure": "2026-08-24T10:00:00Z", "delay_minutes": 90}]
+
+    async def notify(result):
+        raise TelegramForbiddenError(None, "Forbidden: bot was blocked by the user")
+
+    monitor = MonitorManager(AlertService(delayed), repo, interval_minutes=30, duration_hours=1)
+    await monitor.start(100, 100, "TFS", notify)
+    await asyncio.wait_for(monitor.jobs[(100, "TFS")].task, timeout=5)
+
+    assert not monitor.jobs
+    assert repo.removed_subscriptions == [(7, 100, 100)]
+    assert repo.stopped == [7]
+    assert repo.alert_outcomes and repo.alert_outcomes[0][0] is False
+
+
+@pytest.mark.asyncio
+async def test_flood_control_keeps_subscription_for_retry():
+    repo = AlertRepo()
+    delayed = [{"flight_id": "LO123", "scheduled_departure": "2026-08-24T10:00:00Z", "delay_minutes": 90}]
+
+    async def notify(result):
+        raise TelegramRetryAfter(None, "retry after 3", 3)
+
+    monitor = MonitorManager(AlertService(delayed), repo, interval_minutes=1, duration_hours=1)
+    await monitor.start(100, 100, "TFS", notify)
+    await asyncio.sleep(0.2)
+    assert (100, "TFS") in monitor.jobs
+    assert (100, 100) in monitor.jobs[(100, "TFS")].callbacks
+    assert repo.removed_subscriptions == []
+    assert repo.alert_outcomes and "flood control" in (repo.alert_outcomes[0][1] or "")
+    await monitor.stop_user_all(100)

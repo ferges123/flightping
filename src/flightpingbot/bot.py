@@ -104,9 +104,9 @@ async def run(settings: Settings) -> None:
             if not task.done():
                 task.cancel()
         await asyncio.gather(web_task, polling_task, return_exceptions=True)
-        # Stop in-memory tasks without marking persisted monitors as stopped;
-        # the next process start will restore them from SQLite.
-        await monitor.stop_all(persist=False)
+        # Cancel in-memory monitor tasks without marking persisted monitors as
+        # stopped; the next process start restores them from SQLite.
+        await monitor.cancel_all()
         await maintenance.stop()
         await aeroapi.close()
         await bot.session.close()

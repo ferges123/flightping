@@ -26,6 +26,7 @@ class CheckStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class AlertStatus(StrEnum):

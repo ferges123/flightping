@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from aiogram.exceptions import TelegramForbiddenError, TelegramNotFound, TelegramRetryAfter
+
 from .aeroapi import AeroAPI
 from .errors import MissingApiKeyError, RateLimited
 from .repositories import Repository
@@ -63,46 +65,51 @@ class FlightService:
             raise MissingApiKeyError()
         await self._enforce_request_cooldown(actor_user_id)
         check_id = await self.repo.create_check(actor_user_id, airport, window_hours)
-        limits_remaining = [
-            self.daily_limit - daily_used if self.daily_limit else None,
-            self.monthly_limit - monthly_used if self.monthly_limit else None,
-        ]
-        remaining_attempts = min(limit for limit in limits_remaining if limit is not None) if any(limit is not None for limit in limits_remaining) else None
-        request_count = 0
-        if airport not in self._airport_timezones:
-            timezone_lookup = getattr(self.aeroapi, "airport_timezone", None)
-            # The timezone lookup improves presentation only. Reserve the last
-            # quota slot for the actual flight check instead of exceeding a cap.
-            if timezone_lookup and (remaining_attempts is None or remaining_attempts >= 2):
-                timezone_result = await timezone_lookup(airport, api_key)
-                if isinstance(timezone_result, tuple):
-                    airport_timezone, status, latency, timezone_error = timezone_result
-                    await self.repo.record_api_request(check_id, f"airports/{airport}", status, latency, error=timezone_error)
-                    request_count += 1
-                    if remaining_attempts is not None:
-                        remaining_attempts -= 1
+        try:
+            limits_remaining = [
+                self.daily_limit - daily_used if self.daily_limit else None,
+                self.monthly_limit - monthly_used if self.monthly_limit else None,
+            ]
+            remaining_attempts = min(limit for limit in limits_remaining if limit is not None) if any(limit is not None for limit in limits_remaining) else None
+            request_count = 0
+            if airport not in self._airport_timezones:
+                timezone_lookup = getattr(self.aeroapi, "airport_timezone", None)
+                # The timezone lookup improves presentation only. Reserve the last
+                # quota slot for the actual flight check instead of exceeding a cap.
+                if timezone_lookup and (remaining_attempts is None or remaining_attempts >= 2):
+                    timezone_result = await timezone_lookup(airport, api_key)
+                    if isinstance(timezone_result, tuple):
+                        airport_timezone, status, latency, timezone_error = timezone_result
+                        await self.repo.record_api_request(check_id, f"airports/{airport}", status, latency, error=timezone_error)
+                        request_count += 1
+                        if remaining_attempts is not None:
+                            remaining_attempts -= 1
+                    else:
+                        # Compatibility with injected test/dummy clients.
+                        airport_timezone = timezone_result
+                    self._airport_timezones[airport] = airport_timezone
                 else:
-                    # Compatibility with injected test/dummy clients.
-                    airport_timezone = timezone_result
-                self._airport_timezones[airport] = airport_timezone
-            else:
-                self._airport_timezones[airport] = None
-        airport_timezone = self._airport_timezones[airport]
-        flights, status, latency, error, retries = await self.aeroapi.scheduled_departures(
-            airport,
-            window_hours,
-            api_key,
-            max_attempts=remaining_attempts if remaining_attempts is not None else 4,
-        )
-        for flight in flights:
-            flight.setdefault("origin_timezone", airport_timezone)
-        if status in {401, 403}:
-            await self.repo.mark_aeroapi_key_invalid(actor_user_id)
-        await self.repo.record_api_request(check_id, f"airports/{airport}/flights/scheduled_departures", status, latency, retry_number=retries, error=error)
-        await self.repo.record_observations(check_id, flights, min_delay_minutes)
-        delayed = [flight for flight in flights if (flight.get("delay_minutes") or 0) >= min_delay_minutes]
-        await self.repo.finish_check(check_id, status=CheckStatus.ERROR if error else CheckStatus.COMPLETED, request_count=request_count + retries + 1, flight_count=len(flights), delayed_count=len(delayed), error=error)
-        return CheckResult(check_id, airport, flights, delayed, error, min_delay_minutes, auth_failed=status in {401, 403})
+                    self._airport_timezones[airport] = None
+            airport_timezone = self._airport_timezones[airport]
+            flights, status, latency, error, retries = await self.aeroapi.scheduled_departures(
+                airport,
+                window_hours,
+                api_key,
+                max_attempts=remaining_attempts if remaining_attempts is not None else 4,
+            )
+            for flight in flights:
+                flight.setdefault("origin_timezone", airport_timezone)
+            if status in {401, 403}:
+                await self.repo.mark_aeroapi_key_invalid(actor_user_id)
+            await self.repo.record_api_request(check_id, f"airports/{airport}/flights/scheduled_departures", status, latency, retry_number=retries, error=error)
+            await self.repo.record_observations(check_id, flights, min_delay_minutes)
+            delayed = [flight for flight in flights if (flight.get("delay_minutes") or 0) >= min_delay_minutes]
+            await self.repo.finish_check(check_id, status=CheckStatus.ERROR if error else CheckStatus.COMPLETED, request_count=request_count + retries + 1, flight_count=len(flights), delayed_count=len(delayed), error=error)
+            return CheckResult(check_id, airport, flights, delayed, error, min_delay_minutes, auth_failed=status in {401, 403})
+        except asyncio.CancelledError:
+            # A cancelled stop must not leave the check stuck in "running".
+            await self.repo.finish_check(check_id, status=CheckStatus.CANCELLED, request_count=0, flight_count=0, delayed_count=0, error="cancelled")
+            raise
 
     async def test_aeroapi(self, actor_user_id: int) -> int:
         api_key = await self.repo.aeroapi_key(actor_user_id)
@@ -214,6 +221,25 @@ class MonitorManager:
         for job_key, state in list(self.jobs.items()):
             await self._stop_job(job_key, state, persist=persist)
 
+    async def cancel_all(self) -> None:
+        """Cancel every monitor task immediately without persisting stops.
+
+        Used at application shutdown: active jobs are restored from SQLite on
+        the next start, and cancelling avoids waiting out an in-flight AeroAPI
+        cycle (up to ~100 s with retries) beyond systemd's stop timeout.
+        """
+        states = list(self.jobs.values())
+        self.jobs.clear()
+        tasks = []
+        for state in states:
+            state.stop_event.set()
+            state.preserve_on_exit = True
+            if state.task and not state.task.done():
+                state.task.cancel()
+                tasks.append(state.task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def restore_active(self, callback_factory) -> None:
         rows = await self.repo.active_monitor_jobs()
         grouped: dict[tuple[int, str], list] = {}
@@ -244,7 +270,14 @@ class MonitorManager:
     async def _stop_job(self, job_key: tuple[int, str], state: _JobState, *, persist: bool = True) -> None:
         state.stop_event.set()
         state.preserve_on_exit = not persist
-        await state.task
+        if state.task and not state.task.done():
+            # Cancel rather than wait out an in-flight cycle: a user asking to
+            # stop expects it now, not after up to ~100 s of HTTP retries.
+            state.task.cancel()
+        try:
+            await state.task
+        except asyncio.CancelledError:
+            pass
         if persist:
             await self.repo.stop_monitor_job(state.job_id)
         self.jobs.pop(job_key, None)
@@ -320,11 +353,29 @@ class MonitorManager:
                             recipient_result = CheckResult(result.check_id, result.airport, result.flights, new_delayed, result.error, result.min_delay_minutes, result.auth_failed)
                             try:
                                 await notify(recipient_result)
+                            except (TelegramForbiddenError, TelegramNotFound) as exc:
+                                # The chat is gone or has blocked the bot.
+                                # Drop it instead of polling AeroAPI for
+                                # nobody until the job expires; when the last
+                                # chat leaves, end the whole job below.
+                                await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=False, error=str(exc)[:500])
+                                current.callbacks.pop((user_id, chat_id), None)
+                                await self.repo.remove_subscription(state.job_id, user_id, chat_id)
+                                log.warning("chat %s unreachable (%s); subscription removed", chat_id, type(exc).__name__)
+                            except TelegramRetryAfter as exc:
+                                # Transient flood limit: keep the subscription;
+                                # claim_new_alerts re-claims these ERROR alerts
+                                # on the next cycle.
+                                await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=False, error=f"telegram flood control: retry after {exc.retry_after}s")
+                                log.warning("telegram flood control for chat %s; %d alert(s) will retry next cycle", chat_id, len(new_delayed))
                             except Exception as exc:
                                 await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=False, error=str(exc)[:500])
                                 log.exception("alert delivery failed for chat %s", chat_id)
                                 continue
                             await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=True)
+                    if not state.callbacks:
+                        log.warning("stopping monitor %s: no reachable chats remain", job_id)
+                        break
                 except Exception as exc:
                     if isinstance(exc, MissingApiKeyError):
                         # The key was marked invalid by the preceding cycle. Do not
