@@ -86,7 +86,7 @@ class Repository:
     @_serialized_write
     async def update_user_settings(self, user_id: int, *, language: str | None = None, window_hours: int | None = None,
                                    interval_minutes: int | None = None, min_delay_minutes: int | None = None,
-                                   reset: bool = False) -> None:
+                                   duration_hours: int | None = None, reset: bool = False) -> None:
         if language is not None and language not in {"en", "pl"}:
             raise ValueError("Unsupported language")
         if window_hours is not None and window_hours not in {3, 6, 9, 12}:
@@ -95,12 +95,14 @@ class Repository:
             raise ValueError("Unsupported monitor interval")
         if min_delay_minutes is not None and min_delay_minutes not in {30, 45, 60, 90, 120}:
             raise ValueError("Unsupported delay threshold")
+        if duration_hours is not None and duration_hours not in {3, 6, 12, 24}:
+            raise ValueError("Unsupported monitoring duration")
         if reset:
             await self.db.execute("DELETE FROM user_settings WHERE telegram_user_id=?", (user_id,))
         else:
             for column, value in (
                 ("language", language), ("window_hours", window_hours), ("interval_minutes", interval_minutes),
-                ("min_delay_minutes", min_delay_minutes),
+                ("min_delay_minutes", min_delay_minutes), ("duration_hours", duration_hours),
             ):
                 if value is not None:
                     await self.db.execute(f"""INSERT INTO user_settings(telegram_user_id,{column}) VALUES(?,?)

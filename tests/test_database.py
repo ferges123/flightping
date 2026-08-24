@@ -19,7 +19,7 @@ async def test_migration_and_duplicate_access_request(tmp_path):
         assert await repo.upsert_access_request(200, 200, "pilot", "Pilot") == ("pending", 1)
         assert (await repo.decide_request(1, 100, True)) == (True, 200)
         assert (await repo.user(200))["status"] == "approved"
-        await repo.update_user_settings(200, language="pl", window_hours=6, interval_minutes=15, min_delay_minutes=45)
+        await repo.update_user_settings(200, language="pl", window_hours=6, interval_minutes=15, min_delay_minutes=45, duration_hours=12)
         settings = await repo.user_settings(200)
         assert dict(settings) == {
             "telegram_user_id": 200,
@@ -27,7 +27,10 @@ async def test_migration_and_duplicate_access_request(tmp_path):
             "window_hours": 6,
             "interval_minutes": 15,
             "min_delay_minutes": 45,
+            "duration_hours": 12,
         }
+        with pytest.raises(ValueError):
+            await repo.update_user_settings(200, duration_hours=5)
         job_id, new_subscription = await repo.create_monitor_job(200, 200, "TFS", 6, 15, min_delay_minutes=45)
         assert new_subscription is True
         active = await (await db.execute("SELECT status, min_delay_minutes FROM monitor_jobs WHERE id=?", (job_id,))).fetchone()

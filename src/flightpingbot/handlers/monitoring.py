@@ -36,18 +36,20 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             "window_hours": saved["window_hours"] if saved and saved["window_hours"] else service.window_hours,
             "interval_minutes": saved["interval_minutes"] if saved and saved["interval_minutes"] else monitor.interval // 60,
             "min_delay_minutes": saved["min_delay_minutes"] if saved and saved["min_delay_minutes"] else service.min_delay_minutes,
+            "duration_hours": saved["duration_hours"] if saved and saved["duration_hours"] else getattr(monitor, "duration", 6 * 3600) // 3600,
         }
 
     def settings_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="English", callback_data="setting:language:en"), InlineKeyboardButton(text="Polish", callback_data="setting:language:pl")],
             [InlineKeyboardButton(text="Check window", callback_data="setting:menu:window"), InlineKeyboardButton(text="Monitor interval", callback_data="setting:menu:interval")],
-            [InlineKeyboardButton(text="Delay threshold", callback_data="setting:menu:delay"), InlineKeyboardButton(text="Reset defaults", callback_data="setting:reset")],
+            [InlineKeyboardButton(text="Delay threshold", callback_data="setting:menu:delay"), InlineKeyboardButton(text="Monitoring duration", callback_data="setting:menu:duration")],
+            [InlineKeyboardButton(text="Reset defaults", callback_data="setting:reset")],
         ])
 
     def value_keyboard(kind: str) -> InlineKeyboardMarkup:
-        values = {"window": (3, 6, 9, 12), "interval": (15, 30, 45, 60), "delay": (30, 45, 60, 90, 120)}[kind]
-        suffix = " h" if kind == "window" else " min"
+        values = {"window": (3, 6, 9, 12), "interval": (15, 30, 45, 60), "delay": (30, 45, 60, 90, 120), "duration": (3, 6, 12, 24)}[kind]
+        suffix = " h" if kind in {"window", "duration"} else " min"
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{value}{suffix}", callback_data=f"setting:{kind}:{value}") for value in values],
             [InlineKeyboardButton(text="Back", callback_data="setting:back")],
@@ -60,12 +62,14 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             t(language, "settings_language", language="Polski" if language == "pl" else "English"),
             t(language, "settings_window", value=values["window_hours"]),
             t(language, "settings_interval", value=values["interval_minutes"]),
-            t(language, "settings_delay", value=values["min_delay_minutes"]), "",
+            t(language, "settings_delay", value=values["min_delay_minutes"]),
+            t(language, "settings_duration", value=values["duration_hours"]), "",
             t(language, "settings_note"),
         ))
         return language, text
 
     @router.message(Command("setting", "settings"), F.chat.type == "private")
+    @router.message(F.text == "⚙️ Settings", F.chat.type == "private")
     async def setting(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
             await message.answer(t("en", "no_access"))
@@ -103,12 +107,12 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
             await callback.answer(t(language, "settings_language_saved"))
             return
-        field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes"}[kind]
+        field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes", "duration": "duration_hours"}[kind]
         await service.repo.update_user_settings(user.id, **{field: int(value)})
         language, text = await settings_text(user.id)
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
-        label = t(language, f"settings_{kind if kind != 'window' else 'window'}", value="{value}").split(":", 1)[0]
-        await callback.answer(t(language, "settings_saved", label=label, value=f"{value}{' h' if kind == 'window' else ' min'}"))
+        label = t(language, f"settings_{kind}", value="{value}").split(":", 1)[0]
+        await callback.answer(t(language, "settings_saved", label=label, value=f"{value}{' h' if kind in {'window', 'duration'} else ' min'}"))
 
     @router.message(F.text == "🔐 AeroAPI", F.chat.type == "private")
     @router.message(Command("aeroapi"), F.chat.type == "private")

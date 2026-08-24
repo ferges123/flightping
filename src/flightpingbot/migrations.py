@@ -158,6 +158,9 @@ MIGRATIONS = [
     );
     ALTER TABLE monitor_jobs ADD COLUMN min_delay_minutes INTEGER;
     """,
+    """
+    ALTER TABLE user_settings ADD COLUMN duration_hours INTEGER;
+    """,
 ]
 
 

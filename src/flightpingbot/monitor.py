@@ -143,7 +143,8 @@ class MonitorManager:
         return ", ".join(sorted(state.airport for state in self.jobs.values()))
 
     async def start(self, actor_user_id: int, chat_id: int, airport: str, notify, *, window_hours: int | None = None,
-                    interval_minutes: int | None = None, min_delay_minutes: int | None = None) -> str:
+                    interval_minutes: int | None = None, min_delay_minutes: int | None = None,
+                    duration_hours: int | None = None) -> str:
         airport = airport.strip()
         if len(airport) != 3 or not airport.isascii() or not airport.isalpha():
             raise ValueError("The airport must be a three-letter IATA code.")
@@ -151,6 +152,7 @@ class MonitorManager:
         window_hours = window_hours or self.service.window_hours
         interval_minutes = interval_minutes or self.interval // 60
         min_delay_minutes = min_delay_minutes or getattr(self.service, "min_delay_minutes", 60)
+        duration_seconds = duration_hours * 3600 if duration_hours else self.duration
         job_id, new_subscription = await self.repo.create_monitor_job(actor_user_id, chat_id, airport, window_hours, interval_minutes, self.max_active_airports, min_delay_minutes)
         job_key = (actor_user_id, airport)
         if job_key in self.jobs:
@@ -162,7 +164,7 @@ class MonitorManager:
         # own state in the registry.
         self.jobs[job_key] = state
         state.task = asyncio.create_task(
-            self._run(job_id, airport, actor_user_id, stop_event, state),
+            self._run(job_id, airport, actor_user_id, stop_event, state, duration_seconds=duration_seconds),
             name=f"flightping-monitor-{airport}",
         )
         return "started"
@@ -270,12 +272,13 @@ class MonitorManager:
     async def _run(self, job_id: int, airport: str, actor_user_id: int, stop_event: asyncio.Event, state: _JobState,
                    started_at: str | None = None,
                    *, window_hours: int | None = None, interval_minutes: int | None = None,
-                   min_delay_minutes: int | None = None) -> None:
+                   min_delay_minutes: int | None = None, duration_seconds: int | None = None) -> None:
         window_hours = window_hours or self.service.window_hours
         interval = (interval_minutes or self.interval // 60) * 60
         min_delay_minutes = min_delay_minutes or getattr(self.service, "min_delay_minutes", 60)
+        duration = duration_seconds or self.duration
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.duration
+        deadline = loop.time() + duration
         first_delay = 0.0
         if started_at:
             try:
@@ -283,7 +286,7 @@ class MonitorManager:
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=timezone.utc)
                 elapsed = max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
-                deadline = loop.time() + max(0.0, self.duration - elapsed)
+                deadline = loop.time() + max(0.0, duration - elapsed)
                 intervals_elapsed = int(elapsed // interval)
                 first_delay = max(0.0, (intervals_elapsed + 1) * interval - elapsed)
             except (TypeError, ValueError):
