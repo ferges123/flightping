@@ -54,7 +54,9 @@ async def run(settings: Settings) -> None:
 
     def restored_notification(user_id: int, chat_id: int):
         async def notify(result):
-            await bot.send_message(chat_id, format_check(result, settings.timezone_name), parse_mode=ParseMode.HTML)
+            saved = await repo.user_settings(user_id)
+            language = saved["language"] if saved else "en"
+            await bot.send_message(chat_id, format_check(result, settings.timezone_name, language), parse_mode=ParseMode.HTML)
         return notify
 
     await monitor.restore_active(restored_notification)
@@ -68,6 +70,7 @@ async def run(settings: Settings) -> None:
         BotCommand(command="monitor", description="Start airport monitoring"),
         BotCommand(command="stop", description="Stop your monitoring subscriptions"),
         BotCommand(command="status", description="Show monitoring status"),
+        BotCommand(command="setting", description="Change language and monitoring defaults"),
         BotCommand(command="help", description="Show help and current settings"),
         BotCommand(command="aeroapi", description="Configure your AeroAPI key"),
         BotCommand(command="hide", description="Hide the keyboard"),

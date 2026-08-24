@@ -19,10 +19,20 @@ async def test_migration_and_duplicate_access_request(tmp_path):
         assert await repo.upsert_access_request(200, 200, "pilot", "Pilot") == ("pending", 1)
         assert (await repo.decide_request(1, 100, True)) == (True, 200)
         assert (await repo.user(200))["status"] == "approved"
-        job_id, new_subscription = await repo.create_monitor_job(200, 200, "TFS", 9, 30)
+        await repo.update_user_settings(200, language="pl", window_hours=6, interval_minutes=15, min_delay_minutes=45)
+        settings = await repo.user_settings(200)
+        assert dict(settings) == {
+            "telegram_user_id": 200,
+            "language": "pl",
+            "window_hours": 6,
+            "interval_minutes": 15,
+            "min_delay_minutes": 45,
+        }
+        job_id, new_subscription = await repo.create_monitor_job(200, 200, "TFS", 6, 15, min_delay_minutes=45)
         assert new_subscription is True
-        active = await (await db.execute("SELECT status FROM monitor_jobs WHERE id=?", (job_id,))).fetchone()
+        active = await (await db.execute("SELECT status, min_delay_minutes FROM monitor_jobs WHERE id=?", (job_id,))).fetchone()
         assert active["status"] == "active"
+        assert active["min_delay_minutes"] == 45
         assert len(await repo.active_monitor_jobs()) == 1
         await repo.recover_monitors_after_restart()
         recovered = await (await db.execute("SELECT status FROM monitor_jobs WHERE id=?", (job_id,))).fetchone()

@@ -40,7 +40,20 @@ class Database:
             await self.conn.close()
             self.conn = None
 
-    def __getattr__(self, name):
-        if name in {"execute", "executemany", "executescript", "commit", "rollback"} and self.conn:
-            return getattr(self.conn, name)
-        raise AttributeError(name)
+    def _require_connection(self) -> aiosqlite.Connection:
+        if not self.conn:
+            raise RuntimeError("Database is not connected")
+        return self.conn
+
+    async def execute(self, sql: str, parameters=None):
+        conn = self._require_connection()
+        return await (conn.execute(sql, parameters) if parameters is not None else conn.execute(sql))
+
+    async def executemany(self, sql: str, parameters) -> None:
+        await self._require_connection().executemany(sql, parameters)
+
+    async def commit(self) -> None:
+        await self._require_connection().commit()
+
+    async def rollback(self) -> None:
+        await self._require_connection().rollback()

@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
 
-from flightpingbot.monitor import MonitorManager
+from flightpingbot.monitor import MonitorManager, _JobState
 
 
 class FakeRepo:
@@ -61,3 +63,20 @@ async def test_monitor_rejects_non_ascii_airport_code():
     monitor = MonitorManager(FakeService(), FakeRepo(), interval_minutes=30, duration_hours=1)
     with pytest.raises(ValueError):
         await monitor.start(100, 100, "ÄBC", lambda result: None)
+
+
+@pytest.mark.asyncio
+async def test_finished_run_keeps_a_newer_state_under_the_same_key():
+    """Regression: a run that expires while a newer job for the same
+    (user, airport) key was already registered must not remove it."""
+    repo = FakeRepo()
+    monitor = MonitorManager(FakeService(), repo, interval_minutes=30, duration_hours=0)
+    stop_event = asyncio.Event()
+    stop_event.set()
+    new_state = _JobState(2, "TFS", 100, asyncio.Event(), {(100, 100): lambda result: None})
+    monitor.jobs[(100, "TFS")] = new_state
+
+    await monitor._run(1, "TFS", 100, stop_event, _JobState(1, "TFS", 100, stop_event, {}))
+
+    assert monitor.jobs[(100, "TFS")] is new_state
+    assert repo.stopped == [1]

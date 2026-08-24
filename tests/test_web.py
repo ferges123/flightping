@@ -53,9 +53,12 @@ async def test_start_monitor_reports_per_user_limit_instead_of_erroring(tmp_path
     monitor = StubMonitor(RuntimeError("The maximum of 3 active airports has been reached."))
     panel = WebPanel(repo, monitor, StubBot(), frozenset({100}))
 
-    async with _client(panel) as client:
-        response = await client.post("/actions/monitor/start", data={"user_id": "200", "airport": "TFS"})
-        body = (await response.aread()).decode()
+    try:
+        async with _client(panel) as client:
+            response = await client.post("/actions/monitor/start", data={"user_id": "200", "airport": "TFS"})
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
 
     assert "The maximum of 3 active airports has been reached." in body
 
@@ -85,9 +88,12 @@ async def test_start_monitor_adds_monitoring_for_approved_user(tmp_path):
     monitor = StubMonitor("started")
     panel = WebPanel(repo, monitor, StubBot(), frozenset({100}))
 
-    async with _client(panel) as client:
-        response = await client.post("/actions/monitor/start", data={"user_id": "200", "airport": "TFS"})
-        body = (await response.aread()).decode()
+    try:
+        async with _client(panel) as client:
+            response = await client.post("/actions/monitor/start", data={"user_id": "200", "airport": "TFS"})
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
 
     assert "Monitoring for TFS was added." in body
     assert monitor.started == [(200, "TFS")]
@@ -101,9 +107,29 @@ async def test_monitoring_page_labels_planned_expiry_only_for_active_jobs(tmp_pa
     await repo.create_monitor_job(200, 200, "WAW", 9, 30)
     panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
 
-    async with _client(panel) as client:
-        response = await client.get("/monitoring")
-        body = (await response.aread()).decode()
+    try:
+        async with _client(panel) as client:
+            response = await client.get("/monitoring")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
 
     assert "Planned expiry" in body
     assert "Valid until" not in body
+    assert f"<td>—</td><td><form method='post' action='/actions/monitor/{job_id}/remonitor'>" in body
+
+
+@pytest.mark.asyncio
+async def test_monitoring_page_caps_an_unreasonably_large_page_number(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
+
+    try:
+        async with _client(panel) as client:
+            response = await client.get("/monitoring?page=999999999999999999")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert response.status_code == 200
+    assert "?page=100000" in body

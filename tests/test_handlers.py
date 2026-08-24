@@ -50,8 +50,10 @@ class FakeMessage:
 
 class FakeService:
     repo = FakeRepo()
+    window_hours = 9
+    min_delay_minutes = 60
 
-    async def check(self, user_id, airport):
+    async def check(self, user_id, airport, **kwargs):
         raise RuntimeError("AeroAPI returned HTTP 400: invalid airport")
 
     async def test_aeroapi(self, user_id):
@@ -61,6 +63,7 @@ class FakeService:
 class FakeMonitor:
     active = False
     airport = ""
+    interval = 30 * 60
 
     def __init__(self):
         self.stopped_users = []

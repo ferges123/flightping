@@ -112,6 +112,7 @@ All commands work in a private chat with the bot.
 | `/check TFS` | Run a one-off scheduled departure check. |
 | `/monitor TFS` | Start monitoring an airport. |
 | `/status` | Show active monitoring subscriptions. |
+| `/setting` | Change language and defaults for new checks and monitoring. |
 | `/stop` | Stop your monitoring subscriptions. |
 | `/aeroapi` | Set or replace your AeroAPI key. |
 | `/aeroapi status` | Show whether an AeroAPI key is configured. |

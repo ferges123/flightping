@@ -148,6 +148,16 @@ MIGRATIONS = [
     CREATE INDEX stopped_monitor_jobs_stopped_at
       ON monitor_jobs(stopped_at) WHERE status='stopped';
     """,
+    """
+    CREATE TABLE user_settings (
+      telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
+      language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('en','pl')),
+      window_hours INTEGER,
+      interval_minutes INTEGER,
+      min_delay_minutes INTEGER
+    );
+    ALTER TABLE monitor_jobs ADD COLUMN min_delay_minutes INTEGER;
+    """,
 ]
 
 

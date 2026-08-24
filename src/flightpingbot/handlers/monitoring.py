@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -12,7 +12,7 @@ from ..errors import user_facing_error
 from ..formatting import format_check
 from ..monitor import FlightService, MonitorManager
 from ..keyboards import main_keyboard
-from ..onboarding import AEROAPI_SETUP_INSTRUCTIONS
+from ..i18n import t
 import logging
 
 
@@ -28,42 +28,125 @@ class InputState(StatesGroup):
 def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> Router:
     router = Router(name="monitoring")
 
+    async def preferences(user_id: int):
+        get_settings = getattr(service.repo, "user_settings", None)
+        saved = await get_settings(user_id) if get_settings else None
+        language = saved["language"] if saved else "en"
+        return language, {
+            "window_hours": saved["window_hours"] if saved and saved["window_hours"] else service.window_hours,
+            "interval_minutes": saved["interval_minutes"] if saved and saved["interval_minutes"] else monitor.interval // 60,
+            "min_delay_minutes": saved["min_delay_minutes"] if saved and saved["min_delay_minutes"] else service.min_delay_minutes,
+        }
+
+    def settings_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="English", callback_data="setting:language:en"), InlineKeyboardButton(text="Polish", callback_data="setting:language:pl")],
+            [InlineKeyboardButton(text="Check window", callback_data="setting:menu:window"), InlineKeyboardButton(text="Monitor interval", callback_data="setting:menu:interval")],
+            [InlineKeyboardButton(text="Delay threshold", callback_data="setting:menu:delay"), InlineKeyboardButton(text="Reset defaults", callback_data="setting:reset")],
+        ])
+
+    def value_keyboard(kind: str) -> InlineKeyboardMarkup:
+        values = {"window": (3, 6, 9, 12), "interval": (15, 30, 45, 60), "delay": (30, 45, 60, 90, 120)}[kind]
+        suffix = " h" if kind == "window" else " min"
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{value}{suffix}", callback_data=f"setting:{kind}:{value}") for value in values],
+            [InlineKeyboardButton(text="Back", callback_data="setting:back")],
+        ])
+
+    async def settings_text(user_id: int) -> tuple[str, str]:
+        language, values = await preferences(user_id)
+        text = "\n".join((
+            t(language, "settings_title"), "",
+            t(language, "settings_language", language="Polski" if language == "pl" else "English"),
+            t(language, "settings_window", value=values["window_hours"]),
+            t(language, "settings_interval", value=values["interval_minutes"]),
+            t(language, "settings_delay", value=values["min_delay_minutes"]), "",
+            t(language, "settings_note"),
+        ))
+        return language, text
+
+    @router.message(Command("setting", "settings"), F.chat.type == "private")
+    async def setting(message: Message):
+        if not message.from_user or not await auth.is_approved(message.from_user.id):
+            await message.answer(t("en", "no_access"))
+            return
+        _, text = await settings_text(message.from_user.id)
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+
+    @router.callback_query(F.data.startswith("setting:"))
+    async def change_setting(callback: CallbackQuery):
+        user = callback.from_user
+        if not user or not await auth.is_approved(user.id):
+            await callback.answer(t("en", "no_access"), show_alert=True)
+            return
+        _, kind, *raw_value = callback.data.split(":")
+        language, _ = await preferences(user.id)
+        if kind == "menu":
+            await callback.message.edit_reply_markup(reply_markup=value_keyboard(raw_value[0]))
+            await callback.answer()
+            return
+        if kind == "back":
+            _, text = await settings_text(user.id)
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.answer()
+            return
+        if kind == "reset":
+            await service.repo.update_user_settings(user.id, reset=True)
+            language, text = await settings_text(user.id)
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.answer(t(language, "settings_reset"))
+            return
+        value = raw_value[0]
+        if kind == "language":
+            await service.repo.update_user_settings(user.id, language=value)
+            language, text = await settings_text(user.id)
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.answer(t(language, "settings_language_saved"))
+            return
+        field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes"}[kind]
+        await service.repo.update_user_settings(user.id, **{field: int(value)})
+        language, text = await settings_text(user.id)
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+        label = t(language, f"settings_{kind if kind != 'window' else 'window'}", value="{value}").split(":", 1)[0]
+        await callback.answer(t(language, "settings_saved", label=label, value=f"{value}{' h' if kind == 'window' else ' min'}"))
+
     @router.message(F.text == "🔐 AeroAPI", F.chat.type == "private")
     @router.message(Command("aeroapi"), F.chat.type == "private")
     async def aeroapi_command(message: Message, state: FSMContext):
         user = message.from_user
         if not user or not await auth.is_approved(user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(user.id)
         parts = (message.text or "").split(maxsplit=1)
         action = parts[1].strip().lower() if len(parts) == 2 else "set"
         if action == "status":
             suffix = await service.repo.aeroapi_key_suffix(user.id)
             if suffix and suffix.startswith("invalid:"):
-                await message.answer(f"⚠️ AeroAPI key ending in …{suffix.removeprefix('invalid:')} was rejected. Use /aeroapi set to replace it.")
+                await message.answer(t(language, "aeroapi_invalid", suffix=suffix.removeprefix("invalid:")))
             else:
-                await message.answer(f"✅ AeroAPI is configured (key ending in …{suffix})." if suffix else "⚠️ AeroAPI is not configured yet. Use /aeroapi to add your personal key.")
+                await message.answer(t(language, "aeroapi_configured", suffix=suffix) if suffix else t(language, "aeroapi_missing"))
         elif action == "remove":
             removed = await service.repo.remove_aeroapi_key(user.id)
             if removed:
                 await service.repo.audit(user.id, "aeroapi_key_removed")
                 await monitor.stop_user_all(user.id)
-                await message.answer("✅ Your AeroAPI key was removed and monitoring was stopped.")
+                await message.answer(t(language, "aeroapi_removed"))
             else:
-                await message.answer("ℹ️ No AeroAPI key was configured.")
+                await message.answer(t(language, "aeroapi_none"))
         elif action == "test":
             try:
                 status = await service.test_aeroapi(user.id)
             except (RuntimeError, ValueError) as exc:
-                await message.answer(user_facing_error(exc))
+                await message.answer(user_facing_error(exc, language))
                 return
             await service.repo.audit(user.id, "aeroapi_key_test", metadata={"status_code": status})
-            await message.answer("✅ Your AeroAPI key works. FlightAware accepted the test request.")
+            await message.answer(t(language, "aeroapi_works"))
         elif action in {"set", "replace"}:
             await state.set_state(InputState.aeroapi_key)
-            await message.answer(AEROAPI_SETUP_INSTRUCTIONS + "\n\nSend /cancel if you changed your mind.", parse_mode=ParseMode.HTML)
+            await message.answer(t(language, "setup") + t(language, "setup_cancel"), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("Usage: /aeroapi · /aeroapi status · /aeroapi test · /aeroapi remove")
+            await message.answer(t(language, "aeroapi_usage"))
 
     @router.message(InputState.aeroapi_key, ~F.text.startswith("/"), F.chat.type == "private")
     async def aeroapi_key_input(message: Message, state: FSMContext):
@@ -72,8 +155,9 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             return
         if not await auth.is_approved(user.id):
             await state.clear()
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(user.id)
         api_key = (message.text or "").strip()
         delete_failed = False
         try:
@@ -81,27 +165,28 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
         except Exception:
             delete_failed = True
             log.warning("could not delete AeroAPI key message")
-        delete_warning = "\n\n⚠️ I could not delete your key message. Delete it manually from this chat." if delete_failed else ""
+        delete_warning = t(language, "key_delete_warning") if delete_failed else ""
         if not api_key or len(api_key) > 512:
-            await message.answer("⚠️ That doesn't look like a valid AeroAPI key. Try again or send /cancel." + delete_warning)
+            await message.answer(t(language, "aeroapi_invalid_input") + delete_warning)
             return
         try:
             await service.repo.set_aeroapi_key(user.id, api_key)
         except ValueError as exc:
             await state.clear()
-            await message.answer(str(exc) + " Use /aeroapi to try again." + delete_warning)
+            await message.answer(user_facing_error(exc, language) + " /aeroapi" + delete_warning)
             return
         await service.repo.audit(user.id, "aeroapi_key_set")
         await state.clear()
-        await message.answer("✅ Your AeroAPI key was saved securely." + delete_warning)
+        await message.answer(t(language, "aeroapi_saved") + delete_warning)
 
     @router.message(F.text == "🔎 Check", F.chat.type == "private")
     async def check_button(message: Message, state: FSMContext):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(message.from_user.id)
         await state.set_state(InputState.check_airport)
-        await message.answer("📍 Send a three-letter airport code, for example WAW or TFS.\nSend /cancel to stop.")
+        await message.answer(t(language, "airport_prompt"))
 
     @router.message(InputState.check_airport, ~F.text.startswith("/"), F.chat.type == "private")
     async def check_airport_input(message: Message, state: FSMContext):
@@ -110,24 +195,26 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             return
         if not await auth.is_approved(user.id):
             await state.clear()
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, values = await preferences(user.id)
         try:
-            result = await service.check(user.id, (message.text or "").strip())
+            result = await service.check(user.id, (message.text or "").strip(), window_hours=values["window_hours"], min_delay_minutes=values["min_delay_minutes"])
         except (RuntimeError, ValueError) as exc:
-            await message.answer(user_facing_error(exc) + " Try again or send /cancel.")
+            await message.answer(user_facing_error(exc, language) + t(language, "try_again"))
             return
         await state.clear()
         await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": result.airport})
-        await message.answer(format_check(result, auth.settings.timezone_name), parse_mode=ParseMode.HTML)
+        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
 
     @router.message(F.text == "▶️ Monitor", F.chat.type == "private")
     async def monitor_button(message: Message, state: FSMContext):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(message.from_user.id)
         await state.set_state(InputState.monitor_airport)
-        await message.answer("📍 Send a three-letter airport code, for example WAW or TFS.\nSend /cancel to stop.")
+        await message.answer(t(language, "airport_prompt"))
 
     @router.message(InputState.monitor_airport, ~F.text.startswith("/"), F.chat.type == "private")
     async def monitor_airport_input(message: Message, state: FSMContext):
@@ -136,47 +223,41 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             return
         if not await auth.is_approved(user.id):
             await state.clear()
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, values = await preferences(user.id)
         airport = (message.text or "").strip().upper()
         try:
-            monitor_state = await monitor.start(user.id, message.chat.id, airport, lambda result: message.answer(format_check(result, auth.settings.timezone_name), parse_mode=ParseMode.HTML))
+            async def notify(result):
+                current_language, _ = await preferences(user.id)
+                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+            monitor_state = await monitor.start(user.id, message.chat.id, airport, notify, **values)
         except (RuntimeError, ValueError) as exc:
-            await message.answer(user_facing_error(exc) + " Try again or send /cancel.")
+            await message.answer(user_facing_error(exc, language) + t(language, "try_again"))
             return
         await state.clear()
         await service.repo.audit(user.id, "monitor_start", "monitor", airport, {"state": monitor_state})
-        await message.answer(f"✅ Monitoring for <b>{airport}</b> {'started.' if monitor_state == 'started' else 'is already active for you.'}", parse_mode=ParseMode.HTML)
+        await message.answer(t(language, "monitor_started" if monitor_state == "started" else "monitor_subscribed", airport=airport), parse_mode=ParseMode.HTML)
 
     @router.message(Command("cancel"), F.chat.type == "private")
     async def cancel_input(message: Message, state: FSMContext):
         await state.clear()
-        await message.answer("↩️ Cancelled. Nothing was changed.")
+        language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
+        await message.answer(t(language, "cancelled"))
 
     @router.message(F.text == "✖ Hide", F.chat.type == "private")
     @router.message(F.text == "✖ Hide keyboard", F.chat.type == "private")
     @router.message(Command("hide"), F.chat.type == "private")
     async def hide_keyboard(message: Message, state: FSMContext):
         await state.clear()
-        await message.answer("Keyboard hidden. Send /help to show it again.", reply_markup=ReplyKeyboardRemove())
+        language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
+        await message.answer(t(language, "hidden"), reply_markup=ReplyKeyboardRemove())
 
     @router.message(F.text == "❓ Help", F.chat.type == "private")
     @router.message(Command("help"), F.chat.type == "private")
     async def help_command(message: Message):
-        text = (
-            "<b>FlightPingBot help</b>\n\n"
-            "<b>User commands</b>\n"
-            "/start — request access or show your access status\n"
-            "/check &lt;IATA&gt; — check scheduled departures and delays\n"
-            "/monitor &lt;IATA&gt; — start monitoring every 30 minutes\n"
-            "/stop — stop your monitoring subscriptions\n"
-            "/status — show the monitor status\n"
-            "/aeroapi — configure your personal AeroAPI key\n"
-            "/usage — show your personal AeroAPI usage\n"
-            "/help — show this help\n"
-        )
-        text += "\n" + AEROAPI_SETUP_INSTRUCTIONS + "\n"
-        text += "/aeroapi test — verify your personal API key\n"
+        language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
+        text = t(language, "help") + "\n\n" + t(language, "setup") + "\n/aeroapi test — verify your personal API key\n"
         if message.from_user and auth.is_admin(message.from_user.id):
             text += (
                 "\n<b>Admin commands</b>\n"
@@ -193,83 +274,82 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
                 "/db_status — show database, WAL and backup status\n"
                 "/stopall — emergency stop for all monitors\n"
             )
-        text += (
-            "\n<b>Current settings</b>\n"
-            f"Check window: {auth.settings.monitor_window_hours} hours\n"
-            f"Monitor interval: {auth.settings.monitor_interval_minutes} minutes\n"
-            f"Monitor duration: {auth.settings.monitor_duration_hours} hours\n"
-            f"Delay threshold: {auth.settings.min_delay_minutes} minutes\n"
-            f"Maximum active airports: {auth.settings.max_active_airports}\n"
-        )
-        await message.answer(text + "\nAll commands work in private chats only.", parse_mode=ParseMode.HTML, reply_markup=main_keyboard(bool(message.from_user and auth.is_admin(message.from_user.id))))
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(bool(message.from_user and auth.is_admin(message.from_user.id))))
 
     @router.message(Command("check"), F.chat.type == "private")
     async def check(message: Message):
         user = message.from_user
         if not user or not await auth.is_approved(user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, values = await preferences(user.id)
         parts = (message.text or "").split()
         if len(parts) != 2:
-            await message.answer("Usage: /check <IATA>\nExample: /check TFS")
+            await message.answer(t(language, "check_usage"))
             return
         try:
-            result = await service.check(user.id, parts[1])
+            result = await service.check(user.id, parts[1], window_hours=values["window_hours"], min_delay_minutes=values["min_delay_minutes"])
         except (RuntimeError, ValueError) as exc:
-            await message.answer(user_facing_error(exc))
+            await message.answer(user_facing_error(exc, language))
             return
         await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": result.airport})
-        await message.answer(format_check(result, auth.settings.timezone_name), parse_mode=ParseMode.HTML)
+        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
 
     @router.message(Command("monitor"), F.chat.type == "private")
     async def start_monitor(message: Message):
         user = message.from_user
         if not user or not await auth.is_approved(user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, values = await preferences(user.id)
         parts = (message.text or "").split()
         if len(parts) != 2:
-            await message.answer("Usage: /monitor <IATA>\nExample: /monitor TFS")
+            await message.answer(t(language, "monitor_usage"))
             return
         try:
-            monitor_state = await monitor.start(user.id, message.chat.id, parts[1], lambda result: message.answer(format_check(result, auth.settings.timezone_name), parse_mode=ParseMode.HTML))
+            async def notify(result):
+                current_language, _ = await preferences(user.id)
+                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+            monitor_state = await monitor.start(user.id, message.chat.id, parts[1], notify, **values)
         except (RuntimeError, ValueError) as exc:
-            await message.answer(str(exc))
+            await message.answer(user_facing_error(exc, language))
             return
         await service.repo.audit(user.id, "monitor_start", "monitor", parts[1].upper(), {"state": monitor_state})
-        await message.answer(f"Monitoring for {parts[1].upper()} {'started.' if monitor_state == 'started' else 'subscription added.'}")
+        await message.answer(t(language, "monitor_started" if monitor_state == "started" else "monitor_subscribed", airport=parts[1].upper()), parse_mode=ParseMode.HTML)
 
     @router.message(F.text == "⏹ Stop", F.chat.type == "private")
     @router.message(Command("stop"), F.chat.type == "private")
     async def stop_monitor(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(message.from_user.id)
         parts = (message.text or "").split()
         if len(parts) > 2:
-            await message.answer("Usage: /stop [IATA]\nExample: /stop WAW")
+            await message.answer(t(language, "stop_usage"))
             return
         if len(parts) == 2:
             airport = parts[1].upper()
             changed = await monitor.stop_user_airport(message.from_user.id, airport, message.chat.id)
             await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airport)
-            await message.answer(f"✅ Monitoring for <b>{airport}</b> was stopped." if changed else f"ℹ️ You have no active monitoring for <b>{airport}</b>.", parse_mode=ParseMode.HTML)
+            await message.answer(t(language, "monitor_stopped" if changed else "monitor_missing", airport=airport), parse_mode=ParseMode.HTML)
             return
         changed = await monitor.stop_user(message.from_user.id, message.chat.id)
         await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
-        await message.answer("✅ Your monitoring subscriptions were stopped." if changed else "ℹ️ You have no active monitoring subscriptions.")
+        await message.answer(t(language, "monitors_stopped" if changed else "monitors_missing"))
 
     @router.message(F.text == "📊 Status", F.chat.type == "private")
     @router.message(Command("status"), F.chat.type == "private")
     async def status(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
-            await message.answer("🔒 You don't have access yet. Send /start to request access.")
+            await message.answer(t("en", "no_access"))
             return
+        language, _ = await preferences(message.from_user.id)
         jobs = await service.repo.user_monitor_jobs(message.from_user.id, message.chat.id)
         if not jobs:
-            await message.answer("📡 Monitoring is currently inactive.")
+            await message.answer(t(language, "monitor_inactive"))
             return
         airports = ", ".join(row["airport"] for row in jobs)
-        await message.answer(f"📡 Monitoring is active for: <b>{airports}</b>", parse_mode=ParseMode.HTML)
+        await message.answer(t(language, "monitor_active", airports=airports), parse_mode=ParseMode.HTML)
 
     return router

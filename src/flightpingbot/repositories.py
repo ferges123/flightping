@@ -6,6 +6,7 @@ import json
 
 from .database import Database
 from .credentials import CredentialCipher
+from .statuses import UserStatus
 
 
 def utcnow() -> str:
@@ -73,21 +74,48 @@ class Repository:
         for user_id in admin_ids:
             await self.db.execute("""INSERT INTO users(telegram_user_id,chat_id,username,display_name,status,is_admin,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET is_admin=1, updated_at=?""",
-                (user_id, user_id, None, "Administrator", "approved", 1, now, now, now))
+                (user_id, user_id, None, "Administrator", UserStatus.APPROVED, 1, now, now, now))
         await self.db.commit()
 
     async def user(self, user_id: int):
         return await (await self.db.execute("SELECT * FROM users WHERE telegram_user_id=?", (user_id,))).fetchone()
 
+    async def user_settings(self, user_id: int):
+        return await (await self.db.execute("SELECT * FROM user_settings WHERE telegram_user_id=?", (user_id,))).fetchone()
+
+    @_serialized_write
+    async def update_user_settings(self, user_id: int, *, language: str | None = None, window_hours: int | None = None,
+                                   interval_minutes: int | None = None, min_delay_minutes: int | None = None,
+                                   reset: bool = False) -> None:
+        if language is not None and language not in {"en", "pl"}:
+            raise ValueError("Unsupported language")
+        if window_hours is not None and window_hours not in {3, 6, 9, 12}:
+            raise ValueError("Unsupported check window")
+        if interval_minutes is not None and interval_minutes not in {15, 30, 45, 60}:
+            raise ValueError("Unsupported monitor interval")
+        if min_delay_minutes is not None and min_delay_minutes not in {30, 45, 60, 90, 120}:
+            raise ValueError("Unsupported delay threshold")
+        if reset:
+            await self.db.execute("DELETE FROM user_settings WHERE telegram_user_id=?", (user_id,))
+        else:
+            for column, value in (
+                ("language", language), ("window_hours", window_hours), ("interval_minutes", interval_minutes),
+                ("min_delay_minutes", min_delay_minutes),
+            ):
+                if value is not None:
+                    await self.db.execute(f"""INSERT INTO user_settings(telegram_user_id,{column}) VALUES(?,?)
+                        ON CONFLICT(telegram_user_id) DO UPDATE SET {column}=excluded.{column}""", (user_id, value))
+        await self.db.commit()
+
     @_serialized_write
     async def upsert_access_request(self, user_id: int, chat_id: int, username: str | None, display_name: str) -> tuple[str, int | None]:
         now = utcnow()
         current = await self.user(user_id)
-        if current and current["status"] == "blocked":
-            return "blocked", None
-        if current and current["status"] == "approved":
-            return "approved", None
-        if current and current["status"] == "denied":
+        if current and current["status"] == UserStatus.BLOCKED:
+            return UserStatus.BLOCKED, None
+        if current and current["status"] == UserStatus.APPROVED:
+            return UserStatus.APPROVED, None
+        if current and current["status"] == UserStatus.DENIED:
             recent = await (await self.db.execute("SELECT decided_at FROM access_requests WHERE telegram_user_id=? AND status='denied' ORDER BY decided_at DESC LIMIT 1", (user_id,))).fetchone()
             if recent and recent[0]:
                 try:
@@ -97,11 +125,11 @@ class Repository:
                     pass
         await self.db.execute("""INSERT INTO users(telegram_user_id,chat_id,username,display_name,status,is_admin,created_at,updated_at)
             VALUES(?,?,?,?,?,0,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=?, username=?, display_name=?, updated_at=?""",
-            (user_id, chat_id, username, display_name, "pending", now, now, chat_id, username, display_name, now))
+            (user_id, chat_id, username, display_name, UserStatus.PENDING, now, now, chat_id, username, display_name, now))
         pending = await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status='pending'", (user_id,))).fetchone()
         if pending:
             await self.db.commit()
-            return "pending", pending[0]
+            return UserStatus.PENDING, pending[0]
         await self.db.execute("INSERT INTO access_requests(telegram_user_id,status,created_at) VALUES (?, 'pending', ?)", (user_id, now))
         request_id = (await (await self.db.execute("SELECT last_insert_rowid()")).fetchone())[0]
         await self.db.commit()
@@ -110,7 +138,7 @@ class Repository:
     @_serialized_write
     async def decide_request(self, request_id: int, admin_id: int | None, approve: bool) -> tuple[bool, int | None]:
         now = utcnow()
-        status = "approved" if approve else "denied"
+        status = UserStatus.APPROVED if approve else UserStatus.DENIED
         await self.db.execute("BEGIN IMMEDIATE")
         try:
             cursor = await self.db.execute("SELECT telegram_user_id FROM access_requests WHERE id=? AND status='pending'", (request_id,))
@@ -265,7 +293,7 @@ class Repository:
 
     @_serialized_write
     async def set_user_status(self, user_id: int, status: str) -> bool:
-        if status not in {"approved", "revoked", "blocked"}:
+        if status not in {UserStatus.APPROVED, UserStatus.REVOKED, UserStatus.BLOCKED}:
             raise ValueError("invalid user status")
         cursor = await self.db.execute("UPDATE users SET status=?, updated_at=? WHERE telegram_user_id=? AND is_admin=0", (status, utcnow(), user_id))
         await self.db.commit()
@@ -304,7 +332,8 @@ class Repository:
         await self.db.commit()
 
     @_serialized_write
-    async def create_monitor_job(self, actor_user_id: int, chat_id: int, airport: str, window_hours: int, interval_minutes: int, max_active_airports: int = 3) -> tuple[int, bool]:
+    async def create_monitor_job(self, actor_user_id: int, chat_id: int, airport: str, window_hours: int, interval_minutes: int,
+                                 max_active_airports: int = 3, min_delay_minutes: int | None = None) -> tuple[int, bool]:
         existing = await (await self.db.execute("SELECT id FROM monitor_jobs WHERE status='active' AND actor_user_id=? AND airport=? LIMIT 1", (actor_user_id, airport))).fetchone()
         if existing:
             cursor = await self.db.execute("INSERT OR IGNORE INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (existing[0], actor_user_id, chat_id, utcnow()))
@@ -314,8 +343,8 @@ class Repository:
         if active[0] >= max_active_airports:
             raise RuntimeError(f"The maximum of {max_active_airports} active airports has been reached.")
         cursor = await self.db.execute("""INSERT INTO monitor_jobs
-            (actor_user_id,chat_id,airport,window_hours,interval_minutes,status,started_at)
-            VALUES(?,?,?,?,?,'active',?)""", (actor_user_id, chat_id, airport, window_hours, interval_minutes, utcnow()))
+            (actor_user_id,chat_id,airport,window_hours,interval_minutes,min_delay_minutes,status,started_at)
+            VALUES(?,?,?,?,?,?,'active',?)""", (actor_user_id, chat_id, airport, window_hours, interval_minutes, min_delay_minutes, utcnow()))
         job_id = cursor.lastrowid
         await self.db.execute("INSERT INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (job_id, actor_user_id, chat_id, utcnow()))
         await self.db.commit()

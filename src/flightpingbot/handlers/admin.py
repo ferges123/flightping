@@ -10,7 +10,8 @@ import json
 from ..auth import Auth
 from ..repositories import Repository
 from ..keyboards import main_keyboard
-from ..onboarding import AEROAPI_SETUP_INSTRUCTIONS
+from ..i18n import t
+from ..statuses import UserStatus
 
 
 def _audit_actor_label(row) -> str:
@@ -27,6 +28,10 @@ def _audit_actor_label(row) -> str:
 def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
     router = Router(name="admin")
 
+    async def language(user_id: int) -> str:
+        saved = await repo.user_settings(user_id)
+        return saved["language"] if saved else "en"
+
     def admin(message_or_callback) -> bool:
         user = message_or_callback.from_user
         return bool(user and auth.is_admin(user.id))
@@ -36,21 +41,23 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         user = message.from_user
         if not user:
             return
+        user_language = await language(user.id)
         keyboard = main_keyboard(auth.is_admin(user.id))
         status, request_id = await auth.request_access(user.id, message.chat.id, user.username, user.full_name)
-        if status == "approved":
+        if status == UserStatus.APPROVED:
             if await repo.aeroapi_key_suffix(user.id):
-                await message.answer("✅ You already have access to FlightPingBot.", reply_markup=keyboard)
+                await message.answer("✅ Masz już dostęp do FlightPingBot." if user_language == "pl" else "✅ You already have access to FlightPingBot.", reply_markup=keyboard)
             else:
-                await message.answer("✅ You already have access to FlightPingBot.\n\n" + AEROAPI_SETUP_INSTRUCTIONS, parse_mode="HTML", reply_markup=keyboard)
-        elif status == "blocked":
-            await message.answer("🚫 Your access is blocked. Contact an administrator if you think this is a mistake.", reply_markup=keyboard)
-        elif status == "pending":
-            await message.answer("⏳ Your access request is still pending. We'll notify you when it is reviewed.", reply_markup=keyboard)
+                prefix = "✅ Masz już dostęp do FlightPingBot.\n\n" if user_language == "pl" else "✅ You already have access to FlightPingBot.\n\n"
+                await message.answer(prefix + t(user_language, "setup"), parse_mode="HTML", reply_markup=keyboard)
+        elif status == UserStatus.BLOCKED:
+            await message.answer("🚫 Twój dostęp jest zablokowany. Jeśli to pomyłka, skontaktuj się z administratorem." if user_language == "pl" else "🚫 Your access is blocked. Contact an administrator if you think this is a mistake.", reply_markup=keyboard)
+        elif status == UserStatus.PENDING:
+            await message.answer("⏳ Twoja prośba o dostęp nadal czeka na decyzję. Powiadomimy Cię po jej rozpatrzeniu." if user_language == "pl" else "⏳ Your access request is still pending. We'll notify you when it is reviewed.", reply_markup=keyboard)
         elif status == "cooldown":
-            await message.answer("ℹ️ Your previous request was denied. You can submit another request after 24 hours.", reply_markup=keyboard)
+            await message.answer("ℹ️ Poprzednia prośba została odrzucona. Kolejną możesz wysłać po 24 godzinach." if user_language == "pl" else "ℹ️ Your previous request was denied. You can submit another request after 24 hours.", reply_markup=keyboard)
         else:
-            await message.answer("✅ Your access request was sent to the administrators.", reply_markup=keyboard)
+            await message.answer("✅ Twoja prośba o dostęp została wysłana do administratorów." if user_language == "pl" else "✅ Your access request was sent to the administrators.", reply_markup=keyboard)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"access:approve:{request_id}"), InlineKeyboardButton(text="❌ Deny", callback_data=f"access:deny:{request_id}")]])
             text = f"New access request\nID: {user.id}\nUsername: @{user.username or 'not set'}\nName: {user.full_name}"
             for admin_id in auth.settings.admin_user_ids:
@@ -73,7 +80,8 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if changed and user_id:
             await repo.audit(callback.from_user.id, "access_decision", "access_request", raw_id, {"decision": decision, "user_id": user_id})
             await callback.message.edit_reply_markup(reply_markup=None)
-            text = ("✅ <b>Access granted</b>\n\n" + AEROAPI_SETUP_INSTRUCTIONS) if decision == "approve" else "❌ Your access request was denied."
+            user_language = await language(user_id)
+            text = (("✅ <b>Przyznano dostęp</b>\n\n" + t(user_language, "setup")) if user_language == "pl" else ("✅ <b>Access granted</b>\n\n" + t(user_language, "setup"))) if decision == "approve" else ("❌ Twoja prośba o dostęp została odrzucona." if user_language == "pl" else "❌ Your access request was denied.")
             await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False))
 
     @router.message(F.text == "👥 Users", F.chat.type == "private")
@@ -91,7 +99,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
     async def requests(message: Message):
         if not admin(message):
             return
-        rows = await repo.list_users("pending")
+        rows = await repo.list_users(UserStatus.PENDING)
         await message.answer("No pending requests." if not rows else "\n".join(f"{row['telegram_user_id']} — {row['display_name']}" for row in rows))
 
     async def decide_by_user(message: Message, approve: bool):
@@ -101,7 +109,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if len(parts) != 2 or not parts[1].isdigit():
             await message.answer("Usage: /approve <user_id> or /deny <user_id>")
             return
-        rows = await repo.list_users("pending")
+        rows = await repo.list_users(UserStatus.PENDING)
         target = next((row for row in rows if row["telegram_user_id"] == int(parts[1])), None)
         if not target:
             await message.answer("No pending request found.")
@@ -112,7 +120,8 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             await repo.audit(message.from_user.id, "access_decision", "access_request", str(request[0]), {"decision": "approve" if approve else "deny", "user_id": user_id})
         await message.answer("Saved." if changed else "This request was already decided.")
         if changed and user_id:
-            text = ("✅ <b>Access granted</b>\n\n" + AEROAPI_SETUP_INSTRUCTIONS) if approve else "❌ Your access request was denied."
+            user_language = await language(user_id)
+            text = (("✅ <b>Przyznano dostęp</b>\n\n" + t(user_language, "setup")) if user_language == "pl" else ("✅ <b>Access granted</b>\n\n" + t(user_language, "setup"))) if approve else ("❌ Twoja prośba o dostęp została odrzucona." if user_language == "pl" else "❌ Your access request was denied.")
             await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False))
 
     @router.message(Command("approve"), F.chat.type == "private")
@@ -132,13 +141,15 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             return
         target_user_id = int(parts[1])
         if await repo.set_user_status(target_user_id, status):
-            if status in {"blocked", "revoked"} and monitor:
+            if status in {UserStatus.BLOCKED, UserStatus.REVOKED} and monitor:
                 await monitor.stop_user_all(target_user_id)
             await repo.audit(message.from_user.id, f"user_{status}", "user", parts[1])
             await message.answer("Saved.")
-            if status in {"blocked", "revoked"}:
+            if status in {UserStatus.BLOCKED, UserStatus.REVOKED}:
                 try:
-                    await bot.send_message(target_user_id, "🚫 Your access has been blocked. Monitoring has been stopped." if status == "blocked" else "⛔ Your access has been revoked. Monitoring has been stopped.")
+                    user_language = await language(target_user_id)
+                    text = ("🚫 Twój dostęp został zablokowany. Monitorowanie zostało zatrzymane." if status == UserStatus.BLOCKED else "⛔ Twój dostęp został cofnięty. Monitorowanie zostało zatrzymane.") if user_language == "pl" else ("🚫 Your access has been blocked. Monitoring has been stopped." if status == UserStatus.BLOCKED else "⛔ Your access has been revoked. Monitoring has been stopped.")
+                    await bot.send_message(target_user_id, text)
                 except Exception:
                     pass
         else:
@@ -146,15 +157,15 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
 
     @router.message(Command("revoke"), F.chat.type == "private")
     async def revoke(message: Message):
-        await change_status(message, "revoked")
+        await change_status(message, UserStatus.REVOKED)
 
     @router.message(Command("block"), F.chat.type == "private")
     async def block(message: Message):
-        await change_status(message, "blocked")
+        await change_status(message, UserStatus.BLOCKED)
 
     @router.message(Command("unblock"), F.chat.type == "private")
     async def unblock(message: Message):
-        await change_status(message, "approved")
+        await change_status(message, UserStatus.APPROVED)
 
     @router.message(Command("checks"), F.chat.type == "private")
     async def checks(message: Message):
