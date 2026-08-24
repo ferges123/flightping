@@ -260,3 +260,58 @@ def test_format_check_tolerates_invalid_upstream_time_data():
     rendered = format_check(result)
     assert "not-a-time" in rendered
     assert "&lt;invalid&gt;" in rendered
+
+
+class MenuBotStub:
+    def __init__(self):
+        self.command_scopes = []
+
+    async def set_my_commands(self, commands, scope=None):
+        self.command_scopes.append((commands, scope))
+
+
+class FakeCallback:
+    def __init__(self, user_id, data):
+        self.from_user = SimpleNamespace(id=user_id)
+        self.data = data
+        self.answered = []
+        self.edited = []
+        self.message = SimpleNamespace(edit_text=self.edit_text)
+
+    async def edit_text(self, text, **kwargs):
+        self.edited.append(text)
+
+    async def answer(self, text=None, **kwargs):
+        self.answered.append(text)
+
+
+class SettingsRepo(FakeRepo):
+    def __init__(self):
+        super().__init__(status="approved")
+        self.languages = {}
+
+    async def user_settings(self, user_id):
+        return {"language": self.languages.get(user_id), "window_hours": None,
+                "interval_minutes": None, "min_delay_minutes": None, "duration_hours": None}
+
+    async def update_user_settings(self, user_id, *, language=None, reset=False, **kwargs):
+        if language:
+            self.languages[user_id] = language
+
+
+@pytest.mark.asyncio
+async def test_language_switch_updates_the_users_command_menu(tmp_path):
+    """The per-user chat scope must follow the app setting, not the client UI."""
+    approved_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), FakeRepo())
+    service = SimpleNamespace(repo=SettingsRepo(), window_hours=9, min_delay_minutes=60)
+    bot_stub = MenuBotStub()
+    router = make_monitoring_router(approved_auth, service, FakeMonitor(), bot=bot_stub)
+    handler = next(item.callback for item in router.callback_query.handlers if item.callback.__name__ == "change_setting")
+
+    await handler(FakeCallback(100, "setting:language:pl"))
+
+    assert len(bot_stub.command_scopes) == 1
+    commands, scope = bot_stub.command_scopes[0]
+    assert getattr(scope, "chat_id", None) == 100
+    descriptions = {command.description for command in commands}
+    assert "Uruchom monitorowanie lotniska" in descriptions

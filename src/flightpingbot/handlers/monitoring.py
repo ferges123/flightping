@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -12,7 +12,7 @@ from ..errors import user_facing_error
 from ..formatting import format_check
 from ..monitor import FlightService, MonitorManager
 from ..keyboards import main_keyboard
-from ..i18n import t
+from ..i18n import t, telegram_commands
 import logging
 
 
@@ -25,7 +25,7 @@ class InputState(StatesGroup):
     aeroapi_key = State()
 
 
-def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> Router:
+def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot=None) -> Router:
     router = Router(name="monitoring")
 
     async def preferences(user_id: int):
@@ -106,6 +106,16 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
             language, text = await settings_text(user.id)
             await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
             await callback.answer(t(language, "settings_language_saved"))
+            if bot is not None:
+                try:
+                    # Per-user chat scope overrides the global menu so it
+                    # follows the app setting instead of the client's UI.
+                    await bot.set_my_commands(
+                        [BotCommand(command=command, description=description) for command, description in telegram_commands(value)],
+                        scope=BotCommandScopeChat(chat_id=user.id),
+                    )
+                except Exception:
+                    log.warning("could not update the command menu for user %s", user.id)
             return
         field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes", "duration": "duration_hours"}[kind]
         await service.repo.update_user_settings(user.id, **{field: int(value)})

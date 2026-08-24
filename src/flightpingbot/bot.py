@@ -10,6 +10,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 from . import __version__
 from .aeroapi import AeroAPI
+from .i18n import telegram_commands
 from .auth import Auth
 from .config import Settings
 from .database import Database
@@ -65,31 +66,17 @@ async def run(settings: Settings) -> None:
         serve_web(WebPanel(repo, monitor, bot, settings.admin_user_ids, settings.timezone_name), settings.web_host, settings.web_port),
         name="flightping-web",
     )
-    user_commands = [
-        BotCommand(command="start", description="Request access or show access status"),
-        BotCommand(command="check", description="Check scheduled departures and delays"),
-        BotCommand(command="monitor", description="Start airport monitoring"),
-        BotCommand(command="stop", description="Stop your monitoring subscriptions"),
-        BotCommand(command="status", description="Show monitoring status"),
-        BotCommand(command="settings", description="Change language and monitoring defaults"),
-        BotCommand(command="help", description="Show help and current settings"),
-        BotCommand(command="aeroapi", description="Configure your AeroAPI key"),
-        BotCommand(command="hide", description="Hide the keyboard"),
-    ]
-    admin_commands = user_commands + [
-        BotCommand(command="requests", description="List pending access requests"),
-        BotCommand(command="users", description="List users"),
-        BotCommand(command="usage", description="Show API usage"),
-        BotCommand(command="admin_status", description="Show system status"),
-        BotCommand(command="alerts", description="Show alerts"),
-        BotCommand(command="audit", description="Show audit events"),
-        BotCommand(command="db_status", description="Show database status"),
-        BotCommand(command="stopall", description="Stop all monitors"),
-    ]
-    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    def bot_commands(language: str, is_admin: bool = False) -> list[BotCommand]:
+        return [BotCommand(command=command, description=description) for command, description in telegram_commands(language, is_admin)]
+
+    # Base menu follows the client's interface language (exact "pl" match,
+    # then the generic English set).
+    await bot.set_my_commands(bot_commands("en"), scope=BotCommandScopeDefault())
+    await bot.set_my_commands(bot_commands("pl"), scope=BotCommandScopeDefault(language_code="pl"))
     for admin_id in settings.admin_user_ids:
         try:
-            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+            await bot.set_my_commands(bot_commands("en", is_admin=True), scope=BotCommandScopeChat(chat_id=admin_id))
+            await bot.set_my_commands(bot_commands("pl", is_admin=True), scope=BotCommandScopeChat(chat_id=admin_id, language_code="pl"))
         except Exception as exc:
             # Telegram returns chat not found until the admin sends /start
             # to a newly created bot. Default user commands remain available.
@@ -103,7 +90,7 @@ async def run(settings: Settings) -> None:
         )
     )
     dispatcher.include_router(make_admin_router(auth, repo, bot, monitor))
-    dispatcher.include_router(make_monitoring_router(auth, service, monitor))
+    dispatcher.include_router(make_monitoring_router(auth, service, monitor, bot))
     polling_task = asyncio.create_task(dispatcher.start_polling(bot), name="flightping-polling")
     try:
         done, _ = await asyncio.wait({web_task, polling_task}, return_when=asyncio.FIRST_COMPLETED)
