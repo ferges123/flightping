@@ -68,6 +68,22 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         ))
         return language, text
 
+    async def refresh_user_menu(user_id: int, language: str, notice_key: str) -> None:
+        """Apply a changed/reset language to the per-chat command menu and keyboard."""
+        if bot is None:
+            return
+        try:
+            is_admin = auth.is_admin(user_id)
+            await bot.set_my_commands(
+                [BotCommand(command=command, description=description) for command, description in telegram_commands(language, is_admin)],
+                scope=BotCommandScopeChat(chat_id=user_id),
+            )
+            # Telegram swaps the device keyboard only when a message includes
+            # a new reply markup.
+            await bot.send_message(user_id, t(language, notice_key), reply_markup=main_keyboard(is_admin, language))
+        except Exception:
+            log.warning("could not update the command menu for user %s", user_id)
+
     @router.message(Command("settings"), F.chat.type == "private")
     @router.message(F.text.in_(button_texts("btn_settings")), F.chat.type == "private")
     async def setting(message: Message):
@@ -99,6 +115,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             language, text = await settings_text(user.id)
             await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
             await callback.answer(t(language, "settings_reset"))
+            await refresh_user_menu(user.id, language, "settings_reset")
             return
         value = raw_value[0]
         if kind == "language":
@@ -106,19 +123,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             language, text = await settings_text(user.id)
             await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
             await callback.answer(t(language, "settings_language_saved"))
-            if bot is not None:
-                try:
-                    # Per-user chat scope overrides the global menu so it
-                    # follows the app setting instead of the client's UI.
-                    await bot.set_my_commands(
-                        [BotCommand(command=command, description=description) for command, description in telegram_commands(value)],
-                        scope=BotCommandScopeChat(chat_id=user.id),
-                    )
-                    # Telegram only swaps the device keyboard when a message
-                    # carries the new reply_markup — push it explicitly.
-                    await bot.send_message(user.id, t(value, "settings_language_saved"), reply_markup=main_keyboard(auth.is_admin(user.id), value))
-                except Exception:
-                    log.warning("could not update the command menu for user %s", user.id)
+            await refresh_user_menu(user.id, language, "settings_language_saved")
             return
         field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes", "duration": "duration_hours"}[kind]
         await service.repo.update_user_settings(user.id, **{field: int(value)})

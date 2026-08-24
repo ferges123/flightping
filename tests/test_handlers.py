@@ -307,11 +307,15 @@ class SettingsRepo(FakeRepo):
         self.languages = {}
 
     async def user_settings(self, user_id):
-        return {"language": self.languages.get(user_id), "window_hours": None,
+        if user_id not in self.languages:
+            return None
+        return {"language": self.languages[user_id], "window_hours": None,
                 "interval_minutes": None, "min_delay_minutes": None, "duration_hours": None}
 
     async def update_user_settings(self, user_id, *, language=None, reset=False, **kwargs):
-        if language:
+        if reset:
+            self.languages.pop(user_id, None)
+        elif language:
             self.languages[user_id] = language
 
 
@@ -337,3 +341,22 @@ async def test_language_switch_updates_the_users_command_menu(tmp_path):
     keyboard = next(kwargs["reply_markup"] for _, _, kwargs in bot_stub.sent_messages if kwargs.get("reply_markup"))
     labels = [button.text for row in keyboard.keyboard for button in row]
     assert "🔎 Sprawdź" in labels and "⚙️ Ustawienia" in labels
+
+
+@pytest.mark.asyncio
+async def test_reset_settings_restores_the_default_command_menu_and_keyboard(tmp_path):
+    approved_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), FakeRepo())
+    settings_repo = SettingsRepo()
+    settings_repo.languages[100] = "pl"
+    service = SimpleNamespace(repo=settings_repo, window_hours=9, min_delay_minutes=60)
+    bot_stub = MenuBotStub()
+    router = make_monitoring_router(approved_auth, service, FakeMonitor(), bot=bot_stub)
+    handler = next(item.callback for item in router.callback_query.handlers if item.callback.__name__ == "change_setting")
+
+    await handler(FakeCallback(100, "setting:reset"))
+
+    commands, scope = bot_stub.command_scopes[0]
+    assert getattr(scope, "chat_id", None) == 100
+    assert "Show your AeroAPI usage" in {command.description for command in commands}
+    keyboard = next(kwargs["reply_markup"] for _, _, kwargs in bot_stub.sent_messages if kwargs.get("reply_markup"))
+    assert "🔎 Check" in [button.text for row in keyboard.keyboard for button in row]

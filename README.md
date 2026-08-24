@@ -112,12 +112,13 @@ All commands work in a private chat with the bot.
 | `/check TFS` | Run a one-off scheduled departure check. |
 | `/monitor TFS` | Start monitoring an airport. |
 | `/status` | Show active monitoring subscriptions. |
-| `/settings` | Change language and defaults for new checks and monitoring. |
+| `/settings` | Change language and defaults for new checks and monitoring; resetting restores the default English menu and keyboard. |
 | `/stop` | Stop your monitoring subscriptions. |
 | `/aeroapi` | Set or replace your AeroAPI key. |
 | `/aeroapi status` | Show whether an AeroAPI key is configured. |
 | `/aeroapi test` | Test the key through the AeroAPI account endpoint. |
 | `/aeroapi remove` | Remove the key and stop monitoring. |
+| `/usage` | Show your personal AeroAPI usage statistics. |
 | `/cancel` | Cancel the current input flow. |
 | `/help` | Show help and current settings. |
 | `/hide` | Hide the Telegram keyboard. |
@@ -139,7 +140,7 @@ Administrators are configured through `FPB_ADMIN_USER_IDS`.
 | `/unblock <user_id>` | Restore a user's access. |
 | `/checks [IATA]` | Show recent checks. |
 | `/checklog <check_id>` | Show observations for a check. |
-| `/usage [user_id]` | Show AeroAPI usage statistics. |
+| `/usage [user_id]` | Show overall or selected-user AeroAPI usage statistics. |
 | `/alerts [IATA]` | Show alert history. |
 | `/audit [days]` | Show recent audit events. |
 | `/admin_status` | Show users, monitoring, and database status. |

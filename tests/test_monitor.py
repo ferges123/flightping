@@ -249,7 +249,7 @@ async def test_blocked_chat_drops_subscription_and_ends_job():
     assert not monitor.jobs
     assert repo.removed_subscriptions == [(7, 100, 100)]
     assert repo.stopped == [7]
-    assert repo.alert_outcomes and repo.alert_outcomes[0][0] is False
+    assert repo.alert_outcomes == [(False, "Telegram server says - Forbidden: bot was blocked by the user")]
 
 
 @pytest.mark.asyncio
@@ -267,4 +267,5 @@ async def test_flood_control_keeps_subscription_for_retry():
     assert (100, 100) in monitor.jobs[(100, "TFS")].callbacks
     assert repo.removed_subscriptions == []
     assert repo.alert_outcomes and "flood control" in (repo.alert_outcomes[0][1] or "")
+    assert all(sent is False for sent, _ in repo.alert_outcomes)
     await monitor.stop_user_all(100)

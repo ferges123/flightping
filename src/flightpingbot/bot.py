@@ -72,11 +72,11 @@ async def run(settings: Settings) -> None:
     # Base menu follows the client's interface language (exact "pl" match,
     # then the generic English set).
     await bot.set_my_commands(bot_commands("en"), scope=BotCommandScopeDefault())
-    await bot.set_my_commands(bot_commands("pl"), scope=BotCommandScopeDefault(language_code="pl"))
+    await bot.set_my_commands(bot_commands("pl"), scope=BotCommandScopeDefault(), language_code="pl")
     for admin_id in settings.admin_user_ids:
         try:
             await bot.set_my_commands(bot_commands("en", is_admin=True), scope=BotCommandScopeChat(chat_id=admin_id))
-            await bot.set_my_commands(bot_commands("pl", is_admin=True), scope=BotCommandScopeChat(chat_id=admin_id, language_code="pl"))
+            await bot.set_my_commands(bot_commands("pl", is_admin=True), scope=BotCommandScopeChat(chat_id=admin_id), language_code="pl")
         except Exception as exc:
             # Telegram returns chat not found until the admin sends /start
             # to a newly created bot. Default user commands remain available.

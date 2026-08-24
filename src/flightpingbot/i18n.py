@@ -33,6 +33,7 @@ USER_COMMANDS = {
         ("stop", "Stop your monitoring subscriptions"),
         ("status", "Show monitoring status"),
         ("settings", "Change language and monitoring defaults"),
+        ("usage", "Show your AeroAPI usage"),
         ("help", "Show help and current settings"),
         ("aeroapi", "Configure your AeroAPI key"),
         ("hide", "Hide the keyboard"),
@@ -44,6 +45,7 @@ USER_COMMANDS = {
         ("stop", "Zatrzymaj swoje monitorowania"),
         ("status", "Pokaż stan monitorowania"),
         ("settings", "Zmień język i domyślne parametry monitorowania"),
+        ("usage", "Pokaż swoje użycie AeroAPI"),
         ("help", "Pokaż pomoc i bieżące ustawienia"),
         ("aeroapi", "Skonfiguruj swój klucz AeroAPI"),
         ("hide", "Ukryj klawiaturę"),
@@ -54,7 +56,6 @@ ADMIN_COMMANDS = {
     "en": [
         ("requests", "List pending access requests"),
         ("users", "List users"),
-        ("usage", "Show API usage"),
         ("admin_status", "Show system status"),
         ("alerts", "Show alerts"),
         ("audit", "Show audit events"),
@@ -64,7 +65,6 @@ ADMIN_COMMANDS = {
     "pl": [
         ("requests", "Lista oczekujących próśb o dostęp"),
         ("users", "Lista użytkowników"),
-        ("usage", "Pokaż użycie API"),
         ("admin_status", "Pokaż status systemu"),
         ("alerts", "Pokaż alerty"),
         ("audit", "Pokaż zdarzenia audytu"),

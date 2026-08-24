@@ -362,12 +362,14 @@ class MonitorManager:
                                 current.callbacks.pop((user_id, chat_id), None)
                                 await self.repo.remove_subscription(state.job_id, user_id, chat_id)
                                 log.warning("chat %s unreachable (%s); subscription removed", chat_id, type(exc).__name__)
+                                continue
                             except TelegramRetryAfter as exc:
                                 # Transient flood limit: keep the subscription;
                                 # claim_new_alerts re-claims these ERROR alerts
                                 # on the next cycle.
                                 await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=False, error=f"telegram flood control: retry after {exc.retry_after}s")
                                 log.warning("telegram flood control for chat %s; %d alert(s) will retry next cycle", chat_id, len(new_delayed))
+                                continue
                             except Exception as exc:
                                 await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=False, error=str(exc)[:500])
                                 log.exception("alert delivery failed for chat %s", chat_id)
