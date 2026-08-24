@@ -39,6 +39,8 @@ form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
 .monitor-form input:focus, .monitor-form select:focus { outline: 2px solid rgb(23 105 170 / 25%); border-color: #1769aa; }
 .monitor-form button { height: 2.55rem; padding: .45rem 1rem; white-space: nowrap; }
 .notice { margin: .75rem 0; padding: .65rem .8rem; color: #155724; background: #edf8ef; border: 1px solid #c8e6cc; border-radius: 6px; }
+.pagination { display: flex; gap: .5rem; justify-content: flex-end; margin: -.75rem 0 1.5rem; }
+.pagination a { padding: .4rem .65rem; border-radius: 5px; background: #1769aa; color: white; text-decoration: none; }
 @media (max-width: 650px) { table { display: block; overflow-x: auto; white-space: nowrap; } .monitor-form { grid-template-columns: 1fr; } .monitor-form button { width: 100%; } }
 """
 
@@ -120,7 +122,13 @@ class WebPanel:
         return self.page("Start", body, request.url.path)
 
     async def monitoring(self, request):
-        rows = await self.repo.monitor_jobs()
+        page_size = 10
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        results = await self.repo.monitor_jobs(limit=page_size + 1, offset=(page - 1) * page_size)
+        rows, has_next = results[:page_size], len(results) > page_size
         users = await self.repo.list_users(status="approved")
         notice = request.query_params.get("notice")
         body = "<h1>Active monitoring</h1>"
@@ -131,7 +139,7 @@ class WebPanel:
             label = user["username"] and f"@{user['username']}" or user["display_name"]
             body += f"<option value='{user['telegram_user_id']}'>{_e(label)} ({user['telegram_user_id']})</option>"
         body += "</select></label><label>Airport (IATA)<input name='airport' type='text' minlength='3' maxlength='3' pattern='[A-Za-z]{3}' placeholder='WAW' required></label><button type='submit'>Add monitoring</button></form>"
-        body += "<table><tr><th>Airport</th><th>User</th><th>Status</th><th>Interval</th><th>Started</th><th>Ended</th><th>Valid until</th><th>Action</th></tr>"
+        body += "<table><tr><th>Airport</th><th>User</th><th>Status</th><th>Interval</th><th>Started</th><th>Ended</th><th>Planned expiry</th><th>Action</th></tr>"
         for row in rows:
             is_active = row["status"] == "active"
             action = (
@@ -139,12 +147,19 @@ class WebPanel:
                 if is_active
                 else f"<form method='post' action='/actions/monitor/{row['id']}/remonitor'><button>Remonitor</button></form>"
             )
-            valid_until = _add_duration(row["started_at"], self.monitor.duration) if self.monitor else None
+            valid_until = _add_duration(row["started_at"], self.monitor.duration) if self.monitor and is_active else None
             status = "Active" if is_active else "Finished"
             ended_at = "—" if is_active else _time(row["stopped_at"], self.timezone_name)
             body += f"<tr><td><b>{_e(row['airport'])}</b></td><td>{row['actor_user_id']}</td><td>{status}</td><td>{row['interval_minutes']} min</td><td>{_time(row['started_at'], self.timezone_name)}</td><td>{ended_at}</td><td>{_time(valid_until, self.timezone_name)}</td><td>{action}</td></tr>"
         body += "</table>" if rows else "<p>No monitoring jobs found.</p>"
-        return self.page("Monitoring", body, request.url.path)
+        if page > 1 or has_next:
+            body += "<nav class='pagination'>"
+            if page > 1:
+                body += f"<a href='/monitoring?page={page - 1}'>&lt;&lt;</a>"
+            if has_next:
+                body += f"<a href='/monitoring?page={page + 1}'>&gt;&gt;</a>"
+            body += "</nav>"
+        return self.page("Monitoring", body, str(request.url.path) + (f"?page={page}" if page > 1 else ""))
 
     async def users(self, request):
         rows = await self.repo.list_users()
@@ -164,16 +179,30 @@ class WebPanel:
         return self.page("Users", body, request.url.path)
 
     async def history(self, request):
-        checks = await self.repo.recent_checks(limit=50)
+        page_size = 10
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        rows = await self.repo.recent_checks(limit=page_size + 1, offset=(page - 1) * page_size)
+        checks, has_next = rows[:page_size], len(rows) > page_size
         alerts = await self.repo.list_alerts(limit=30)
         body = "<h1>History</h1><h2>Checks</h2><table><tr><th>ID</th><th>Airport</th><th>Status</th><th>Flights</th><th>Delayed</th><th>Time</th></tr>"
         for row in checks:
             body += f"<tr><td>#{row['id']}</td><td>{_e(row['airport'])}</td><td>{_e(row['status'])}</td><td>{row['flight_count']}</td><td>{row['delayed_count']}</td><td>{_time(row['started_at'], self.timezone_name)}</td></tr>"
-        body += "</table><h2>Alerts</h2><table><tr><th>Airport</th><th>Flight</th><th>Delay</th><th>Status</th><th>Time</th></tr>"
+        body += "</table>" if checks else "</table><p>No checks found.</p>"
+        if page > 1 or has_next:
+            body += "<nav class='pagination'>"
+            if page > 1:
+                body += f"<a href='/history?page={page - 1}'>&lt;&lt;</a>"
+            if has_next:
+                body += f"<a href='/history?page={page + 1}'>&gt;&gt;</a>"
+            body += "</nav>"
+        body += "<h2>Alerts</h2><table><tr><th>Airport</th><th>Flight</th><th>Delay</th><th>Status</th><th>Time</th></tr>"
         for row in alerts:
             body += f"<tr><td>{_e(row['airport'])}</td><td>{_e(row['flight_id'])}</td><td>{row['delay_minutes']} min</td><td>{_e(row['status'])}</td><td>{_time(row['created_at'], self.timezone_name)}</td></tr>"
         body += "</table>"
-        return self.page("History", body, request.url.path)
+        return self.page("History", body, str(request.url.path) + (f"?page={page}" if page > 1 else ""))
 
     async def successes(self, request):
         rows = await self.repo.delayed_observations(limit=100)
@@ -211,7 +240,7 @@ class WebPanel:
                 "subscribed": f"The user was subscribed to {airport.strip().upper()}.",
                 "already_subscribed": f"Monitoring for {airport.strip().upper()} already exists.",
             }[status]
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RuntimeError) as exc:
             notice = str(exc) or "Could not add monitoring."
         return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
 

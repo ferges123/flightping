@@ -68,8 +68,6 @@ class Repository:
         now = utcnow()
         rows = await (await self.db.execute("SELECT telegram_user_id, is_admin FROM users WHERE is_admin=1")).fetchall()
         existing = {row[0] for row in rows}
-        if existing - admin_ids and len(admin_ids) == 0:
-            raise ValueError("refusing to remove the last administrator")
         for user_id in existing - admin_ids:
             await self.db.execute("UPDATE users SET is_admin=0, updated_at=? WHERE telegram_user_id=?", (now, user_id))
         for user_id in admin_ids:
@@ -183,10 +181,15 @@ class Repository:
         await self.db.execute("UPDATE checks SET status=?,request_count=?,flight_count=?,delayed_count=?,error=?,finished_at=? WHERE id=?", (status, request_count, flight_count, delayed_count, error, utcnow(), check_id))
         await self.db.commit()
 
-    async def recent_checks(self, airport: str | None = None, limit: int = 20):
+    async def recent_checks(self, airport: str | None = None, limit: int = 20, offset: int = 0):
         if airport:
-            return await (await self.db.execute("SELECT * FROM checks WHERE airport=? ORDER BY id DESC LIMIT ?", (airport, limit))).fetchall()
-        return await (await self.db.execute("SELECT * FROM checks ORDER BY id DESC LIMIT ?", (limit,))).fetchall()
+            return await (await self.db.execute(
+                "SELECT * FROM checks WHERE airport=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (airport, limit, offset),
+            )).fetchall()
+        return await (await self.db.execute(
+            "SELECT * FROM checks ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+        )).fetchall()
 
     async def successful_checks(self, limit: int = 100):
         return await (await self.db.execute(
@@ -273,11 +276,15 @@ class Repository:
             FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id
             WHERE j.status='active' ORDER BY j.id""")).fetchall()
 
-    async def monitor_jobs(self):
+    async def monitor_jobs(self, limit: int | None = None, offset: int = 0):
         """Return active and finished monitoring jobs for the admin panel."""
-        return await (await self.db.execute("""SELECT * FROM monitor_jobs
+        query = """SELECT * FROM monitor_jobs
             ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,
-                     COALESCE(stopped_at, started_at) DESC, id DESC""")).fetchall()
+                     COALESCE(stopped_at, started_at) DESC, id DESC"""
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            return await (await self.db.execute(query, (limit, offset))).fetchall()
+        return await (await self.db.execute(query)).fetchall()
 
     async def monitor_job(self, job_id: int):
         return await (await self.db.execute(

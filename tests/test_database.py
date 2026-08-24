@@ -66,6 +66,41 @@ async def test_failed_alert_is_claimed_again_on_a_later_check(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recent_checks_supports_pagination(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        check_ids = [await repo.create_check(200, "TFS", 9) for _ in range(6)]
+
+        first_page = await repo.recent_checks(limit=5)
+        second_page = await repo.recent_checks(limit=5, offset=5)
+
+        assert [row["id"] for row in first_page] == list(reversed(check_ids[1:]))
+        assert [row["id"] for row in second_page] == [check_ids[0]]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_monitor_jobs_supports_pagination(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        for user_id in range(1, 7):
+            await repo.create_monitor_job(user_id, user_id, f"A{user_id:02}", 9, 30)
+
+        first_page = await repo.monitor_jobs(limit=5)
+        second_page = await repo.monitor_jobs(limit=5, offset=5)
+
+        assert len(first_page) == 5
+        assert len(second_page) == 1
+        assert [row["id"] for row in first_page] == [6, 5, 4, 3, 2]
+        assert [row["id"] for row in second_page] == [1]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_web_access_decision_has_no_impersonated_admin(tmp_path):
     db = await Database(tmp_path / "test.sqlite3").connect()
     try:
