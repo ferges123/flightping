@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from flightpingbot.monitor import MonitorManager, _JobState
+from flightpingbot.monitor import CheckResult, FlightService, MonitorManager, _JobState
 
 
 class FakeRepo:
@@ -80,3 +80,41 @@ async def test_finished_run_keeps_a_newer_state_under_the_same_key():
 
     assert monitor.jobs[(100, "TFS")] is new_state
     assert repo.stopped == [1]
+
+
+@pytest.mark.asyncio
+async def test_check_flags_auth_failure_from_status_code_not_error_text():
+    """Regression: auth failure is detected via the auth_failed flag, not by
+    sniffing 'HTTP 401' out of the error message."""
+
+    class RepoStub:
+        async def api_request_count(self, since, user_id):
+            return 0
+
+        async def aeroapi_key(self, user_id):
+            return "secret"
+
+        async def create_check(self, actor, airport, window_hours):
+            return 1
+
+        async def record_api_request(self, *args, **kwargs):
+            pass
+
+        async def record_observations(self, *args, **kwargs):
+            pass
+
+        async def mark_aeroapi_key_invalid(self, user_id):
+            self.invalidated = user_id
+
+        async def finish_check(self, *args, **kwargs):
+            pass
+
+    class AeroStub:
+        async def scheduled_departures(self, airport, window_hours, api_key, *, max_attempts=4):
+            return [], 401, 0, "AeroAPI returned HTTP 401: nope", 0
+
+    service = FlightService(RepoStub(), AeroStub(), min_delay_minutes=60, window_hours=9)
+    result = await service.check(200, "TFS")
+
+    assert result.auth_failed is True
+    assert result.error == "AeroAPI returned HTTP 401: nope"

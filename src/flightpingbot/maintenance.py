@@ -8,6 +8,7 @@ from pathlib import Path
 import aiosqlite
 
 from .database import Database
+from .statuses import MonitorJobStatus
 
 log = logging.getLogger(__name__)
 
@@ -16,10 +17,10 @@ RETENTION_SQL = {
     "flight_observations": "DELETE FROM flight_observations WHERE observed_at < ?",
     "audit_events": "DELETE FROM audit_events WHERE created_at < ?",
     "api_requests": "DELETE FROM api_requests WHERE created_at < ?",
-    "monitor_subscriptions": """DELETE FROM monitor_subscriptions WHERE job_id IN (
-        SELECT id FROM monitor_jobs WHERE status='stopped' AND stopped_at < ?
+    "monitor_subscriptions": f"""DELETE FROM monitor_subscriptions WHERE job_id IN (
+        SELECT id FROM monitor_jobs WHERE status='{MonitorJobStatus.STOPPED}' AND stopped_at < ?
     )""",
-    "monitor_jobs": "DELETE FROM monitor_jobs WHERE status='stopped' AND stopped_at < ?",
+    "monitor_jobs": f"DELETE FROM monitor_jobs WHERE status='{MonitorJobStatus.STOPPED}' AND stopped_at < ?",
     "checks": """DELETE FROM checks WHERE finished_at < ?
         AND NOT EXISTS (SELECT 1 FROM flight_observations WHERE check_id=checks.id)
         AND NOT EXISTS (SELECT 1 FROM api_requests WHERE check_id=checks.id)

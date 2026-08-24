@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .aeroapi import AeroAPI
+from .errors import MissingApiKeyError, RateLimited
 from .repositories import Repository
+from .statuses import CheckStatus
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ class CheckResult:
     delayed: list[dict]
     error: str | None = None
     min_delay_minutes: int = 60
+    auth_failed: bool = False
 
 
 class FlightService:
@@ -37,7 +40,7 @@ class FlightService:
             previous = self._last_request_at.get(actor_user_id)
             if previous is not None and now - previous < self.request_cooldown_seconds:
                 remaining = max(1, int(self.request_cooldown_seconds - (now - previous)))
-                raise RuntimeError(f"Please wait {remaining} seconds before starting another check.")
+                raise RateLimited(remaining)
             self._last_request_at[actor_user_id] = now
 
     async def check(self, actor_user_id: int, airport: str, *, window_hours: int | None = None,
@@ -57,7 +60,7 @@ class FlightService:
             raise RuntimeError("The monthly AeroAPI request limit has been reached.")
         api_key = await self.repo.aeroapi_key(actor_user_id)
         if not api_key:
-            raise RuntimeError("Configure your AeroAPI key first with /aeroapi.")
+            raise MissingApiKeyError()
         await self._enforce_request_cooldown(actor_user_id)
         check_id = await self.repo.create_check(actor_user_id, airport, window_hours)
         limits_remaining = [
@@ -98,13 +101,13 @@ class FlightService:
         await self.repo.record_api_request(check_id, f"airports/{airport}/flights/scheduled_departures", status, latency, retry_number=retries, error=error)
         await self.repo.record_observations(check_id, flights, min_delay_minutes)
         delayed = [flight for flight in flights if (flight.get("delay_minutes") or 0) >= min_delay_minutes]
-        await self.repo.finish_check(check_id, status="error" if error else "completed", request_count=request_count + retries + 1, flight_count=len(flights), delayed_count=len(delayed), error=error)
-        return CheckResult(check_id, airport, flights, delayed, error, min_delay_minutes)
+        await self.repo.finish_check(check_id, status=CheckStatus.ERROR if error else CheckStatus.COMPLETED, request_count=request_count + retries + 1, flight_count=len(flights), delayed_count=len(delayed), error=error)
+        return CheckResult(check_id, airport, flights, delayed, error, min_delay_minutes, auth_failed=status in {401, 403})
 
     async def test_aeroapi(self, actor_user_id: int) -> int:
         api_key = await self.repo.aeroapi_key(actor_user_id)
         if not api_key:
-            raise RuntimeError("Configure your AeroAPI key first with /aeroapi.")
+            raise MissingApiKeyError()
         status, error = await self.aeroapi.validate_key(api_key)
         if status in {401, 403}:
             await self.repo.mark_aeroapi_key_invalid(actor_user_id)
@@ -266,15 +269,8 @@ class MonitorManager:
             while True:
                 try:
                     return await self.service.check(actor_user_id, airport, window_hours=window_hours, min_delay_minutes=min_delay_minutes)
-                except RuntimeError as exc:
-                    message = str(exc)
-                    if not message.startswith("Please wait "):
-                        raise
-                    try:
-                        wait_seconds = max(1, int(message.split()[2]))
-                    except (IndexError, ValueError):
-                        wait_seconds = 1
-                    await asyncio.sleep(wait_seconds)
+                except RateLimited as exc:
+                    await asyncio.sleep(exc.retry_after)
 
     async def _run(self, job_id: int, airport: str, actor_user_id: int, stop_event: asyncio.Event, state: _JobState,
                    started_at: str | None = None,
@@ -310,7 +306,7 @@ class MonitorManager:
                     if stop_event.is_set():
                         break
                     current = self.jobs.get((actor_user_id, airport))
-                    if current and result.error and any(code in result.error for code in ("HTTP 401", "HTTP 403")):
+                    if current and result.auth_failed:
                         await self._notify_invalid_key(current)
                         log.warning("stopping monitor %s: AeroAPI key was rejected", job_id)
                         break
@@ -321,7 +317,7 @@ class MonitorManager:
                             new_delayed = await self.repo.claim_new_alerts(result.check_id, chat_id, result.delayed)
                             if not new_delayed:
                                 continue
-                            recipient_result = CheckResult(result.check_id, result.airport, result.flights, new_delayed, result.error, result.min_delay_minutes)
+                            recipient_result = CheckResult(result.check_id, result.airport, result.flights, new_delayed, result.error, result.min_delay_minutes, result.auth_failed)
                             try:
                                 await notify(recipient_result)
                             except Exception as exc:
@@ -330,7 +326,7 @@ class MonitorManager:
                                 continue
                             await self.repo.finish_alerts(result.check_id, chat_id, new_delayed, sent=True)
                 except Exception as exc:
-                    if isinstance(exc, RuntimeError) and str(exc) == "Configure your AeroAPI key first with /aeroapi.":
+                    if isinstance(exc, MissingApiKeyError):
                         # The key was marked invalid by the preceding cycle. Do not
                         # keep a dead job alive for the remainder of its duration.
                         log.warning("stopping monitor %s: AeroAPI key is no longer valid", job_id)

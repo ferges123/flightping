@@ -6,7 +6,8 @@ import json
 
 from .database import Database
 from .credentials import CredentialCipher
-from .statuses import UserStatus
+from .errors import InvalidApiKeyFormat
+from .statuses import AccessRequestStatus, AlertStatus, CheckStatus, MonitorJobStatus, UserStatus
 
 
 def utcnow() -> str:
@@ -31,7 +32,7 @@ class Repository:
         if not self.credentials:
             raise RuntimeError("AeroAPI credential encryption is not configured")
         if not api_key or not api_key.isascii() or any(character.isspace() for character in api_key):
-            raise ValueError("The AeroAPI key must contain only ASCII characters and no spaces.")
+            raise InvalidApiKeyFormat()
         now = utcnow()
         encrypted = self.credentials.encrypt(api_key)
         await self.db.execute("""INSERT INTO user_aeroapi_credentials
@@ -118,7 +119,7 @@ class Repository:
         if current and current["status"] == UserStatus.APPROVED:
             return UserStatus.APPROVED, None
         if current and current["status"] == UserStatus.DENIED:
-            recent = await (await self.db.execute("SELECT decided_at FROM access_requests WHERE telegram_user_id=? AND status='denied' ORDER BY decided_at DESC LIMIT 1", (user_id,))).fetchone()
+            recent = await (await self.db.execute(f"SELECT decided_at FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.DENIED}' ORDER BY decided_at DESC LIMIT 1", (user_id,))).fetchone()
             if recent and recent[0]:
                 try:
                     if datetime.now(timezone.utc) - datetime.fromisoformat(recent[0]) < timedelta(hours=24):
@@ -128,7 +129,7 @@ class Repository:
         await self.db.execute("""INSERT INTO users(telegram_user_id,chat_id,username,display_name,status,is_admin,created_at,updated_at)
             VALUES(?,?,?,?,?,0,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=?, username=?, display_name=?, updated_at=?""",
             (user_id, chat_id, username, display_name, UserStatus.PENDING, now, now, chat_id, username, display_name, now))
-        pending = await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status='pending'", (user_id,))).fetchone()
+        pending = await (await self.db.execute(f"SELECT id FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.PENDING}'", (user_id,))).fetchone()
         if pending:
             await self.db.commit()
             return UserStatus.PENDING, pending[0]
@@ -143,14 +144,14 @@ class Repository:
         status = UserStatus.APPROVED if approve else UserStatus.DENIED
         await self.db.execute("BEGIN IMMEDIATE")
         try:
-            cursor = await self.db.execute("SELECT telegram_user_id FROM access_requests WHERE id=? AND status='pending'", (request_id,))
+            cursor = await self.db.execute(f"SELECT telegram_user_id FROM access_requests WHERE id=? AND status='{AccessRequestStatus.PENDING}'", (request_id,))
             row = await cursor.fetchone()
             await cursor.close()
             if not row:
                 await self.db.rollback()
                 return False, None
             user_id = row[0]
-            cursor = await self.db.execute("UPDATE access_requests SET status=?, decided_by=?, decided_at=? WHERE id=? AND status='pending'", (status, admin_id, now, request_id))
+            cursor = await self.db.execute(f"UPDATE access_requests SET status=?, decided_by=?, decided_at=? WHERE id=? AND status='{AccessRequestStatus.PENDING}'", (status, admin_id, now, request_id))
             changed = cursor.rowcount == 1
             await cursor.close()
             if not changed:
@@ -172,19 +173,19 @@ class Repository:
         return await (await self.db.execute(query, args)).fetchall()
 
     async def pending_request_for_user(self, user_id: int):
-        return await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status='pending'", (user_id,))).fetchone()
+        return await (await self.db.execute(f"SELECT id FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.PENDING}'", (user_id,))).fetchone()
 
     async def pending_request_ids(self) -> dict[int, int]:
         """Pending access request id per user, in one query for the users page."""
         rows = await (await self.db.execute(
-            "SELECT telegram_user_id, MIN(id) FROM access_requests WHERE status='pending' GROUP BY telegram_user_id"
+            f"SELECT telegram_user_id, MIN(id) FROM access_requests WHERE status='{AccessRequestStatus.PENDING}' GROUP BY telegram_user_id"
         )).fetchall()
         return {row[0]: row[1] for row in rows}
 
     @_serialized_write
     async def create_check(self, actor: int, airport: str, window_hours: int) -> int:
         now = utcnow()
-        cursor = await self.db.execute("INSERT INTO checks(actor_user_id,airport,window_hours,status,started_at) VALUES(?,?,?,'running',?)", (actor, airport, window_hours, now))
+        cursor = await self.db.execute(f"INSERT INTO checks(actor_user_id,airport,window_hours,status,started_at) VALUES(?,?,?, '{CheckStatus.RUNNING}',?)", (actor, airport, window_hours, now))
         await self.db.commit()
         return cursor.lastrowid
 
@@ -230,7 +231,7 @@ class Repository:
 
     async def successful_checks(self, limit: int = 100):
         return await (await self.db.execute(
-            "SELECT * FROM checks WHERE status='completed' ORDER BY id DESC LIMIT ?",
+            f"SELECT * FROM checks WHERE status='{CheckStatus.COMPLETED}' ORDER BY id DESC LIMIT ?",
             (limit,),
         )).fetchall()
 
@@ -310,9 +311,9 @@ class Repository:
         return cursor.rowcount == 1
 
     async def active_monitor_jobs(self):
-        return await (await self.db.execute("""SELECT j.*, s.telegram_user_id, s.chat_id AS subscription_chat_id
+        return await (await self.db.execute(f"""SELECT j.*, s.telegram_user_id, s.chat_id AS subscription_chat_id
             FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id
-            WHERE j.status='active' ORDER BY j.id""")).fetchall()
+            WHERE j.status='{MonitorJobStatus.ACTIVE}' ORDER BY j.id""")).fetchall()
 
     async def monitor_jobs(self, limit: int | None = None, offset: int = 0):
         """Return active and finished monitoring jobs for the admin panel."""
@@ -332,12 +333,12 @@ class Repository:
     @_serialized_write
     async def recover_monitors_after_restart(self) -> None:
         """Stop persisted monitor rows whose owners no longer have access."""
-        await self.db.execute("""UPDATE monitor_jobs
-            SET status='stopped', stopped_at=?
-            WHERE status='active' AND NOT EXISTS (
+        await self.db.execute(f"""UPDATE monitor_jobs
+            SET status='{MonitorJobStatus.STOPPED}', stopped_at=?
+            WHERE status='{MonitorJobStatus.ACTIVE}' AND NOT EXISTS (
                 SELECT 1 FROM users
                 WHERE users.telegram_user_id=monitor_jobs.actor_user_id
-                  AND users.status='approved'
+                  AND users.status='{UserStatus.APPROVED}'
             )""", (utcnow(),))
         await self.db.commit()
 
@@ -345,12 +346,12 @@ class Repository:
     async def create_monitor_job(self, actor_user_id: int, chat_id: int, airport: str, window_hours: int, interval_minutes: int,
                                  max_active_airports: int = 3, min_delay_minutes: int | None = None,
                                  duration_hours: int | None = None) -> tuple[int, bool]:
-        existing = await (await self.db.execute("SELECT id FROM monitor_jobs WHERE status='active' AND actor_user_id=? AND airport=? LIMIT 1", (actor_user_id, airport))).fetchone()
+        existing = await (await self.db.execute(f"SELECT id FROM monitor_jobs WHERE status='{MonitorJobStatus.ACTIVE}' AND actor_user_id=? AND airport=? LIMIT 1", (actor_user_id, airport))).fetchone()
         if existing:
             cursor = await self.db.execute("INSERT OR IGNORE INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (existing[0], actor_user_id, chat_id, utcnow()))
             await self.db.commit()
             return existing[0], cursor.rowcount == 1
-        active = await (await self.db.execute("SELECT COUNT(*) FROM monitor_jobs WHERE status='active' AND actor_user_id=?", (actor_user_id,))).fetchone()
+        active = await (await self.db.execute(f"SELECT COUNT(*) FROM monitor_jobs WHERE status='{MonitorJobStatus.ACTIVE}' AND actor_user_id=?", (actor_user_id,))).fetchone()
         if active[0] >= max_active_airports:
             raise RuntimeError(f"The maximum of {max_active_airports} active airports has been reached.")
         cursor = await self.db.execute("""INSERT INTO monitor_jobs
@@ -371,30 +372,30 @@ class Repository:
         return await (await self.db.execute("SELECT * FROM monitor_subscriptions WHERE job_id=?", (job_id,))).fetchall()
 
     async def user_monitor_jobs(self, user_id: int, chat_id: int):
-        return await (await self.db.execute("SELECT j.* FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id WHERE s.telegram_user_id=? AND s.chat_id=? AND j.status='active'", (user_id, chat_id))).fetchall()
+        return await (await self.db.execute(f"SELECT j.* FROM monitor_jobs j JOIN monitor_subscriptions s ON s.job_id=j.id WHERE s.telegram_user_id=? AND s.chat_id=? AND j.status='{MonitorJobStatus.ACTIVE}'", (user_id, chat_id))).fetchall()
 
     @_serialized_write
     async def stop_monitor_job(self, job_id: int | None) -> None:
         if job_id is None:
             return
-        await self.db.execute("UPDATE monitor_jobs SET status='stopped', stopped_at=? WHERE id=? AND status='active'", (utcnow(), job_id))
+        await self.db.execute(f"UPDATE monitor_jobs SET status='{MonitorJobStatus.STOPPED}', stopped_at=? WHERE id=? AND status='{MonitorJobStatus.ACTIVE}'", (utcnow(), job_id))
         await self.db.commit()
 
     @_serialized_write
     async def claim_new_alerts(self, check_id: int, recipient_chat_id: int, flights: list[dict]) -> list[dict]:
         new_flights: list[dict] = []
         for flight in flights:
-            cursor = await self.db.execute("""INSERT INTO alerts
+            cursor = await self.db.execute(f"""INSERT INTO alerts
                 (check_id,recipient_chat_id,flight_id,scheduled_departure,delay_minutes,status,created_at)
-                VALUES(?,?,?,?,?,'pending',?)
+                VALUES(?,?,?,?,?, '{AlertStatus.PENDING}',?)
                 ON CONFLICT(flight_id, scheduled_departure, recipient_chat_id) DO UPDATE SET
                     check_id=excluded.check_id,
                     delay_minutes=excluded.delay_minutes,
-                    status='pending',
+                    status='{AlertStatus.PENDING}',
                     error=NULL,
                     sent_at=NULL
-                WHERE alerts.status='error'
-                   OR (alerts.status='pending' AND alerts.check_id != excluded.check_id)""",
+                WHERE alerts.status='{AlertStatus.ERROR}'
+                   OR (alerts.status='{AlertStatus.PENDING}' AND alerts.check_id != excluded.check_id)""",
                 (check_id, recipient_chat_id, flight["flight_id"], flight.get("scheduled_departure") or "unknown", flight.get("delay_minutes") or 0, utcnow()))
             if cursor.rowcount == 1:
                 new_flights.append(flight)
@@ -403,8 +404,9 @@ class Repository:
 
     @_serialized_write
     async def finish_alerts(self, check_id: int, recipient_chat_id: int, flights: list[dict], *, sent: bool, error: str | None = None) -> None:
-        status = "sent" if sent else "error"
+        status = AlertStatus.SENT if sent else AlertStatus.ERROR
         for flight in flights:
-            await self.db.execute("""UPDATE alerts SET status=?, error=?, sent_at=?
-                WHERE check_id=? AND recipient_chat_id=? AND flight_id=? AND scheduled_departure=? AND status='pending'""", (status, error, utcnow() if sent else None, check_id, recipient_chat_id, flight["flight_id"], flight.get("scheduled_departure") or "unknown"))
+            await self.db.execute(f"""UPDATE alerts SET status=?, error=?, sent_at=?
+                WHERE check_id=? AND recipient_chat_id=? AND flight_id=? AND scheduled_departure=? AND status='{AlertStatus.PENDING}'""",
+                (status, error, utcnow() if sent else None, check_id, recipient_chat_id, flight["flight_id"], flight.get("scheduled_departure") or "unknown"))
         await self.db.commit()
