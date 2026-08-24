@@ -12,4 +12,10 @@ MESSAGES = {
     "help": "<b>FlightPingBot help</b>\n\n<b>User commands</b>\n/start — request access or show your access status\n/check &lt;IATA&gt; — check scheduled departures and delays\n/monitor &lt;IATA&gt; — start airport monitoring\n/stop — stop your monitoring subscriptions\n/status — show the monitor status\n/settings — change your language and monitoring defaults\n/aeroapi — configure your personal AeroAPI key\n/usage — show your personal AeroAPI usage\n/help — show this help\n\nAll commands work in private chats only.",
     "setup": "🔐 <b>Connect your AeroAPI key</b>\n\n1. Open https://www.flightaware.com/aeroapi/portal/\n2. Sign in to FlightAware and activate AeroAPI.\n3. Go to <i>My AeroAPI → Overview → API Keys</i> and create a key.\n4. Copy the key, then send it here as your next message.\n\n🔒 Your key is encrypted before it is stored, and the key message is deleted immediately.\nAfterwards, use /aeroapi status to verify the setup or /aeroapi test to test it.",
     "setup_cancel": "\n\nSend /cancel if you changed your mind.",
+    "btn_check": "🔎 Check", "btn_monitor": "▶️ Monitor", "btn_stop": "⏹ Stop", "btn_status": "📊 Status",
+    "btn_hide": "✖ Hide", "btn_help": "❓ Help", "btn_aeroapi": "🔐 AeroAPI", "btn_settings": "⚙️ Settings",
+    "btn_users": "👥 Users", "btn_usage": "📈 Usage", "btn_admin_status": "⚙️ Admin status", "btn_stop_all": "🛑 Stop all",
+    "set_language_en": "English", "set_language_pl": "Polski",
+    "set_menu_window": "Check window", "set_menu_interval": "Monitor interval", "set_menu_delay": "Delay threshold",
+    "set_menu_duration": "Monitoring duration", "set_reset": "Reset defaults", "set_back": "Back",
 }

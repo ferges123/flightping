@@ -11,6 +11,20 @@ def t(lang: str | None, key: str, **values) -> str:
     return MESSAGES.get(lang, EN_MESSAGES)[key].format(**values)
 
 
+def button_label(key: str, lang: str | None) -> str:
+    """Localized label of a reply-keyboard button."""
+    return MESSAGES.get(lang if lang in MESSAGES else "en", EN_MESSAGES)[key]
+
+
+def button_texts(key: str) -> set[str]:
+    """All language variants of a button label, for F.text.in_(...) filters.
+
+    Reply-keyboard buttons arrive as plain text in whatever language the
+    user's saved keyboard uses, so handlers must accept every variant.
+    """
+    return {messages[key] for messages in MESSAGES.values()}
+
+
 USER_COMMANDS = {
     "en": [
         ("start", "Request access or show access status"),

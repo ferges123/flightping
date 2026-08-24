@@ -11,6 +11,7 @@ from ..auth import Auth
 from ..repositories import Repository
 from ..keyboards import main_keyboard
 from ..i18n import t
+from ..i18n import button_texts
 from ..statuses import UserStatus
 
 
@@ -42,7 +43,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if not user:
             return
         user_language = await language(user.id)
-        keyboard = main_keyboard(auth.is_admin(user.id))
+        keyboard = main_keyboard(auth.is_admin(user.id), user_language)
         status, request_id = await auth.request_access(user.id, message.chat.id, user.username, user.full_name)
         if status == UserStatus.APPROVED:
             if await repo.aeroapi_key_suffix(user.id):
@@ -82,9 +83,9 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             await callback.message.edit_reply_markup(reply_markup=None)
             user_language = await language(user_id)
             text = (("✅ <b>Przyznano dostęp</b>\n\n" + t(user_language, "setup")) if user_language == "pl" else ("✅ <b>Access granted</b>\n\n" + t(user_language, "setup"))) if decision == "approve" else ("❌ Twoja prośba o dostęp została odrzucona." if user_language == "pl" else "❌ Your access request was denied.")
-            await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False))
+            await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False, user_language))
 
-    @router.message(F.text == "👥 Users", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_users")), F.chat.type == "private")
     @router.message(Command("users"), F.chat.type == "private")
     async def users(message: Message):
         if not admin(message):
@@ -122,7 +123,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if changed and user_id:
             user_language = await language(user_id)
             text = (("✅ <b>Przyznano dostęp</b>\n\n" + t(user_language, "setup")) if user_language == "pl" else ("✅ <b>Access granted</b>\n\n" + t(user_language, "setup"))) if approve else ("❌ Twoja prośba o dostęp została odrzucona." if user_language == "pl" else "❌ Your access request was denied.")
-            await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False))
+            await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=main_keyboard(False, user_language))
 
     @router.message(Command("approve"), F.chat.type == "private")
     async def approve(message: Message):
@@ -186,7 +187,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         observations = await repo.check_observations(int(parts[1]))
         await message.answer("No observations found." if not observations else "\n".join(f"{row['flight_id']} {row['origin'] or '?'}→{row['destination'] or '?'} delay={row['delay_minutes'] or 0} min" for row in observations[:50]))
 
-    @router.message(F.text == "📈 Usage", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_usage")), F.chat.type == "private")
     @router.message(Command("usage"), F.chat.type == "private")
     async def usage(message: Message):
         if not admin(message):
@@ -219,7 +220,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         scope = f" for user {user_id}" if user_id is not None else " overall"
         await message.answer(f"Last 24 hours{scope}: requests={total}, successes={row['success'] or 0}, errors={row['errors'] or 0}, retries={row['retries'] or 0}{limit_text}{warning}")
 
-    @router.message(F.text == "⚙️ Admin status", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_admin_status")), F.chat.type == "private")
     @router.message(Command("admin_status"), F.chat.type == "private")
     async def admin_status(message: Message):
         if not admin(message):
@@ -285,7 +286,7 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         backups = sorted((auth.settings.state_dir / "backups").glob("flightpingbot-*.sqlite3"), reverse=True)
         await message.answer(f"<b>Database status</b>\n\nDB: {db_path.stat().st_size if db_path.exists() else 0} bytes\nWAL: {wal_path.stat().st_size if wal_path.exists() else 0} bytes\nBackups: {len(backups)}\nLatest backup: {backups[0].name if backups else 'none'}", parse_mode="HTML")
 
-    @router.message(F.text == "🛑 Stop all", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_stop_all")), F.chat.type == "private")
     @router.message(Command("stopall"), F.chat.type == "private")
     async def stopall(message: Message):
         if not admin(message):

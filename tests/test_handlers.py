@@ -265,9 +265,13 @@ def test_format_check_tolerates_invalid_upstream_time_data():
 class MenuBotStub:
     def __init__(self):
         self.command_scopes = []
+        self.sent_messages = []
 
     async def set_my_commands(self, commands, scope=None):
         self.command_scopes.append((commands, scope))
+
+    async def send_message(self, chat_id, text=None, **kwargs):
+        self.sent_messages.append((chat_id, text, kwargs))
 
 
 class FakeCallback:
@@ -315,3 +319,9 @@ async def test_language_switch_updates_the_users_command_menu(tmp_path):
     assert getattr(scope, "chat_id", None) == 100
     descriptions = {command.description for command in commands}
     assert "Uruchom monitorowanie lotniska" in descriptions
+    # A fresh message must carry the localized reply keyboard so the device
+    # actually swaps it.
+    assert any(reply_markup is not None for _, _, reply_markup in bot_stub.sent_messages)
+    keyboard = next(kwargs["reply_markup"] for _, _, kwargs in bot_stub.sent_messages if kwargs.get("reply_markup"))
+    labels = [button.text for row in keyboard.keyboard for button in row]
+    assert "🔎 Sprawdź" in labels and "⚙️ Ustawienia" in labels

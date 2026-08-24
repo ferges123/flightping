@@ -10,4 +10,10 @@ MESSAGES = {
     "help": "<b>Pomoc FlightPingBot</b>\n\n<b>Komendy użytkownika</b>\n/start — poproś o dostęp lub sprawdź jego stan\n/check &lt;IATA&gt; — sprawdź planowane odloty i opóźnienia\n/monitor &lt;IATA&gt; — uruchom monitorowanie lotniska\n/stop — zatrzymaj monitorowania\n/status — pokaż stan monitorowania\n/settings — zmień język i domyślne parametry monitorowania\n/aeroapi — skonfiguruj osobisty klucz AeroAPI\n/usage — pokaż użycie osobistego API\n/help — pokaż tę pomoc\n\nWszystkie komendy działają tylko w prywatnej rozmowie z botem.",
     "setup": "🔐 <b>Połącz klucz AeroAPI</b>\n\n1. Otwórz https://www.flightaware.com/aeroapi/portal/\n2. Zaloguj się do FlightAware i aktywuj AeroAPI.\n3. Przejdź do <i>My AeroAPI → Overview → API Keys</i> i utwórz klucz.\n4. Skopiuj klucz i wyślij go tutaj w następnej wiadomości.\n\n🔒 Klucz jest szyfrowany przed zapisem, a wiadomość z kluczem jest od razu usuwana.\nPotem użyj /aeroapi status, aby sprawdzić konfigurację, lub /aeroapi test, aby przetestować klucz.",
     "setup_cancel": "\n\nWyślij /cancel, jeśli chcesz anulować.",
+    "btn_check": "🔎 Sprawdź", "btn_monitor": "▶️ Monitoruj", "btn_stop": "⏹ Stop", "btn_status": "📊 Status",
+    "btn_hide": "✖ Ukryj", "btn_help": "❓ Pomoc", "btn_aeroapi": "🔐 AeroAPI", "btn_settings": "⚙️ Ustawienia",
+    "btn_users": "👥 Użytkownicy", "btn_usage": "📈 Zużycie", "btn_admin_status": "⚙️ Status admina", "btn_stop_all": "🛑 Zatrzymaj wszystko",
+    "set_language_en": "English", "set_language_pl": "Polski",
+    "set_menu_window": "Zakres wyszukiwania", "set_menu_interval": "Interwał monitorowania", "set_menu_delay": "Próg opóźnienia",
+    "set_menu_duration": "Czas trwania monitorowania", "set_reset": "Domyślne ustawienia", "set_back": "Wróć",
 }

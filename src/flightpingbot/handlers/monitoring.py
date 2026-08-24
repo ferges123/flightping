@@ -12,7 +12,7 @@ from ..errors import user_facing_error
 from ..formatting import format_check
 from ..monitor import FlightService, MonitorManager
 from ..keyboards import main_keyboard
-from ..i18n import t, telegram_commands
+from ..i18n import button_texts, t, telegram_commands
 import logging
 
 
@@ -39,20 +39,20 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             "duration_hours": saved["duration_hours"] if saved and saved["duration_hours"] else getattr(monitor, "duration", 6 * 3600) // 3600,
         }
 
-    def settings_keyboard() -> InlineKeyboardMarkup:
+    def settings_keyboard(language: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="English", callback_data="setting:language:en"), InlineKeyboardButton(text="Polish", callback_data="setting:language:pl")],
-            [InlineKeyboardButton(text="Check window", callback_data="setting:menu:window"), InlineKeyboardButton(text="Monitor interval", callback_data="setting:menu:interval")],
-            [InlineKeyboardButton(text="Delay threshold", callback_data="setting:menu:delay"), InlineKeyboardButton(text="Monitoring duration", callback_data="setting:menu:duration")],
-            [InlineKeyboardButton(text="Reset defaults", callback_data="setting:reset")],
+            [InlineKeyboardButton(text=t(language, "set_language_en"), callback_data="setting:language:en"), InlineKeyboardButton(text=t(language, "set_language_pl"), callback_data="setting:language:pl")],
+            [InlineKeyboardButton(text=t(language, "set_menu_window"), callback_data="setting:menu:window"), InlineKeyboardButton(text=t(language, "set_menu_interval"), callback_data="setting:menu:interval")],
+            [InlineKeyboardButton(text=t(language, "set_menu_delay"), callback_data="setting:menu:delay"), InlineKeyboardButton(text=t(language, "set_menu_duration"), callback_data="setting:menu:duration")],
+            [InlineKeyboardButton(text=t(language, "set_reset"), callback_data="setting:reset")],
         ])
 
-    def value_keyboard(kind: str) -> InlineKeyboardMarkup:
+    def value_keyboard(kind: str, language: str) -> InlineKeyboardMarkup:
         values = {"window": (3, 6, 9, 12), "interval": (15, 30, 45, 60), "delay": (30, 45, 60, 90, 120), "duration": (3, 6, 12, 24)}[kind]
         suffix = " h" if kind in {"window", "duration"} else " min"
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{value}{suffix}", callback_data=f"setting:{kind}:{value}") for value in values],
-            [InlineKeyboardButton(text="Back", callback_data="setting:back")],
+            [InlineKeyboardButton(text=t(language, "set_back"), callback_data="setting:back")],
         ])
 
     async def settings_text(user_id: int) -> tuple[str, str]:
@@ -69,13 +69,13 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         return language, text
 
     @router.message(Command("settings"), F.chat.type == "private")
-    @router.message(F.text == "⚙️ Settings", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_settings")), F.chat.type == "private")
     async def setting(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
             await message.answer(t("en", "no_access"))
             return
-        _, text = await settings_text(message.from_user.id)
-        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+        language, text = await settings_text(message.from_user.id)
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
 
     @router.callback_query(F.data.startswith("setting:"))
     async def change_setting(callback: CallbackQuery):
@@ -86,25 +86,25 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         _, kind, *raw_value = callback.data.split(":")
         language, _ = await preferences(user.id)
         if kind == "menu":
-            await callback.message.edit_reply_markup(reply_markup=value_keyboard(raw_value[0]))
+            await callback.message.edit_reply_markup(reply_markup=value_keyboard(raw_value[0], language))
             await callback.answer()
             return
         if kind == "back":
             _, text = await settings_text(user.id)
-            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
             await callback.answer()
             return
         if kind == "reset":
             await service.repo.update_user_settings(user.id, reset=True)
             language, text = await settings_text(user.id)
-            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
             await callback.answer(t(language, "settings_reset"))
             return
         value = raw_value[0]
         if kind == "language":
             await service.repo.update_user_settings(user.id, language=value)
             language, text = await settings_text(user.id)
-            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
             await callback.answer(t(language, "settings_language_saved"))
             if bot is not None:
                 try:
@@ -114,17 +114,20 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
                         [BotCommand(command=command, description=description) for command, description in telegram_commands(value)],
                         scope=BotCommandScopeChat(chat_id=user.id),
                     )
+                    # Telegram only swaps the device keyboard when a message
+                    # carries the new reply_markup — push it explicitly.
+                    await bot.send_message(user.id, t(value, "settings_language_saved"), reply_markup=main_keyboard(auth.is_admin(user.id), value))
                 except Exception:
                     log.warning("could not update the command menu for user %s", user.id)
             return
         field = {"window": "window_hours", "interval": "interval_minutes", "delay": "min_delay_minutes", "duration": "duration_hours"}[kind]
         await service.repo.update_user_settings(user.id, **{field: int(value)})
         language, text = await settings_text(user.id)
-        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard())
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
         label = t(language, f"settings_{kind}", value="{value}").split(":", 1)[0]
         await callback.answer(t(language, "settings_saved", label=label, value=f"{value}{' h' if kind in {'window', 'duration'} else ' min'}"))
 
-    @router.message(F.text == "🔐 AeroAPI", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_aeroapi")), F.chat.type == "private")
     @router.message(Command("aeroapi"), F.chat.type == "private")
     async def aeroapi_command(message: Message, state: FSMContext):
         user = message.from_user
@@ -193,7 +196,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         await state.clear()
         await message.answer(t(language, "aeroapi_saved") + delete_warning)
 
-    @router.message(F.text == "🔎 Check", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_check")), F.chat.type == "private")
     async def check_button(message: Message, state: FSMContext):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
             await message.answer(t("en", "no_access"))
@@ -221,7 +224,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": result.airport})
         await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
 
-    @router.message(F.text == "▶️ Monitor", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_monitor")), F.chat.type == "private")
     async def monitor_button(message: Message, state: FSMContext):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
             await message.answer(t("en", "no_access"))
@@ -259,15 +262,14 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
         await message.answer(t(language, "cancelled"))
 
-    @router.message(F.text == "✖ Hide", F.chat.type == "private")
-    @router.message(F.text == "✖ Hide keyboard", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_hide") | {"✖ Hide keyboard"}), F.chat.type == "private")
     @router.message(Command("hide"), F.chat.type == "private")
     async def hide_keyboard(message: Message, state: FSMContext):
         await state.clear()
         language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
         await message.answer(t(language, "hidden"), reply_markup=ReplyKeyboardRemove())
 
-    @router.message(F.text == "❓ Help", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_help")), F.chat.type == "private")
     @router.message(Command("help"), F.chat.type == "private")
     async def help_command(message: Message):
         language, _ = await preferences(message.from_user.id) if message.from_user else ("en", {})
@@ -288,7 +290,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
                 "/db_status — show database, WAL and backup status\n"
                 "/stopall — emergency stop for all monitors\n"
             )
-        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(bool(message.from_user and auth.is_admin(message.from_user.id))))
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(bool(message.from_user and auth.is_admin(message.from_user.id)), language))
 
     @router.message(Command("check"), F.chat.type == "private")
     async def check(message: Message):
@@ -340,7 +342,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
         await message.answer(t(language, "monitors_stopped" if changed else "monitors_missing"))
 
-    @router.message(F.text == "⏹ Stop", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_stop")), F.chat.type == "private")
     async def stop_monitor_button(message: Message):
         await stop_all_monitors(message)
 
@@ -362,7 +364,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airport)
         await message.answer(t(language, "monitor_stopped" if changed else "monitor_missing", airport=airport), parse_mode=ParseMode.HTML)
 
-    @router.message(F.text == "📊 Status", F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_status")), F.chat.type == "private")
     @router.message(Command("status"), F.chat.type == "private")
     async def status(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
