@@ -11,11 +11,20 @@ def utcnow() -> str:
 
 
 def serialized_write(method):
-    """Serialize a multi-statement write against the shared connection."""
+    """Serialize a multi-statement write against the shared connection.
+
+    If the method fails after executing statements but before committing, the
+    open transaction is rolled back so a later writer's commit cannot flush
+    the partial data.
+    """
     @wraps(method)
     async def wrapped(self, *args, **kwargs):
         async with self.db.write_lock:
-            return await method(self, *args, **kwargs)
+            try:
+                return await method(self, *args, **kwargs)
+            except BaseException:
+                await self.db.rollback()
+                raise
     return wrapped
 
 

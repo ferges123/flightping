@@ -225,10 +225,13 @@ class WebPanel:
         return HTMLResponse(html)
 
     async def dashboard(self, request):
-        counts = await self.repo.user_counts()
-        jobs = await self.repo.active_monitor_jobs()
-        checks = await self.repo.recent_checks(limit=8)
-        usage = await self.repo.usage(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+        # Four aggregates should tell one coherent story; group the reads so a
+        # concurrent write transaction cannot be half-visible between them.
+        async with self.repo.db.consistent_reads():
+            counts = await self.repo.user_counts()
+            jobs = await self.repo.active_monitor_jobs()
+            checks = await self.repo.recent_checks(limit=8)
+            usage = await self.repo.usage(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
         cards = "".join(
             _metric_card(label, value)
             for label, value in (

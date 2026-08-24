@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -9,12 +10,38 @@ from .migrations import migrate
 
 
 class Database:
+    """Single shared SQLite connection.
+
+    Concurrency model
+    -----------------
+    All coroutines share one connection, so they also share one transaction
+    state.  Multi-statement writes must hold ``write_lock`` (see
+    ``repositories.base.serialized_write``); otherwise two writers could
+    interleave their statements inside one transaction.
+
+    Reads do NOT take the lock.  A single SELECT is atomic, but a SELECT
+    issued between another coroutine's ``execute`` and ``commit`` will see
+    that uncommitted data.  When several reads need a mutually consistent
+    picture (e.g. dashboard aggregates), wrap them in ``consistent_reads()``.
+    """
+
     def __init__(self, path: Path):
         self.path = path
         self.conn: aiosqlite.Connection | None = None
         # Repository writes can span several awaits.  They must not share one
         # SQLite transaction with another coroutine using this connection.
         self.write_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def consistent_reads(self):
+        """Hold the write lock across multiple reads.
+
+        Prevents interleaving with an in-flight write transaction so the
+        grouped reads observe a snapshot that never mixes pre- and post-write
+        state.  Use sparingly: it delays writers while the section runs.
+        """
+        async with self.write_lock:
+            yield
 
     async def connect(self) -> "Database":
         self.path.parent.mkdir(parents=True, exist_ok=True)
