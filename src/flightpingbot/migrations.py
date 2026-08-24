@@ -161,6 +161,9 @@ MIGRATIONS = [
     """
     ALTER TABLE user_settings ADD COLUMN duration_hours INTEGER;
     """,
+    """
+    ALTER TABLE monitor_jobs ADD COLUMN duration_hours INTEGER;
+    """,
 ]
 
 

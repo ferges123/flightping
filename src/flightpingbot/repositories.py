@@ -174,6 +174,13 @@ class Repository:
     async def pending_request_for_user(self, user_id: int):
         return await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status='pending'", (user_id,))).fetchone()
 
+    async def pending_request_ids(self) -> dict[int, int]:
+        """Pending access request id per user, in one query for the users page."""
+        rows = await (await self.db.execute(
+            "SELECT telegram_user_id, MIN(id) FROM access_requests WHERE status='pending' GROUP BY telegram_user_id"
+        )).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     @_serialized_write
     async def create_check(self, actor: int, airport: str, window_hours: int) -> int:
         now = utcnow()
@@ -284,7 +291,8 @@ class Repository:
         return await (await self.db.execute(query, (*args, limit))).fetchall()
 
     async def list_audit(self, days: int = 7, limit: int = 100):
-        return await (await self.db.execute("SELECT * FROM audit_events WHERE created_at >= datetime('now', ?) ORDER BY id DESC LIMIT ?", (f"-{days} days", limit))).fetchall()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return await (await self.db.execute("SELECT * FROM audit_events WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (cutoff, limit))).fetchall()
 
     async def user_counts(self):
         rows = await (await self.db.execute("SELECT status, COUNT(*) AS count FROM users GROUP BY status")).fetchall()
@@ -335,7 +343,8 @@ class Repository:
 
     @_serialized_write
     async def create_monitor_job(self, actor_user_id: int, chat_id: int, airport: str, window_hours: int, interval_minutes: int,
-                                 max_active_airports: int = 3, min_delay_minutes: int | None = None) -> tuple[int, bool]:
+                                 max_active_airports: int = 3, min_delay_minutes: int | None = None,
+                                 duration_hours: int | None = None) -> tuple[int, bool]:
         existing = await (await self.db.execute("SELECT id FROM monitor_jobs WHERE status='active' AND actor_user_id=? AND airport=? LIMIT 1", (actor_user_id, airport))).fetchone()
         if existing:
             cursor = await self.db.execute("INSERT OR IGNORE INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (existing[0], actor_user_id, chat_id, utcnow()))
@@ -345,8 +354,8 @@ class Repository:
         if active[0] >= max_active_airports:
             raise RuntimeError(f"The maximum of {max_active_airports} active airports has been reached.")
         cursor = await self.db.execute("""INSERT INTO monitor_jobs
-            (actor_user_id,chat_id,airport,window_hours,interval_minutes,min_delay_minutes,status,started_at)
-            VALUES(?,?,?,?,?,?,'active',?)""", (actor_user_id, chat_id, airport, window_hours, interval_minutes, min_delay_minutes, utcnow()))
+            (actor_user_id,chat_id,airport,window_hours,interval_minutes,min_delay_minutes,duration_hours,status,started_at)
+            VALUES(?,?,?,?,?,?,?,'active',?)""", (actor_user_id, chat_id, airport, window_hours, interval_minutes, min_delay_minutes, duration_hours, utcnow()))
         job_id = cursor.lastrowid
         await self.db.execute("INSERT INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (job_id, actor_user_id, chat_id, utcnow()))
         await self.db.commit()

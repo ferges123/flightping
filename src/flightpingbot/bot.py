@@ -70,7 +70,7 @@ async def run(settings: Settings) -> None:
         BotCommand(command="monitor", description="Start airport monitoring"),
         BotCommand(command="stop", description="Stop your monitoring subscriptions"),
         BotCommand(command="status", description="Show monitoring status"),
-        BotCommand(command="setting", description="Change language and monitoring defaults"),
+        BotCommand(command="settings", description="Change language and monitoring defaults"),
         BotCommand(command="help", description="Show help and current settings"),
         BotCommand(command="aeroapi", description="Configure your AeroAPI key"),
         BotCommand(command="hide", description="Hide the keyboard"),

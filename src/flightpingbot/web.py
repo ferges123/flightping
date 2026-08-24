@@ -101,14 +101,15 @@ def _alerts_table(alerts, timezone_name: str) -> str:
     return _table(["Airport", "Flight", "Delay", "Status", "Time"], rows, "No alerts found.")
 
 
-def _job_row(row, duration_seconds: int | None, timezone_name: str) -> str:
+def _job_row(row, default_duration_seconds: int | None, timezone_name: str) -> str:
     is_active = row["status"] == MonitorJobStatus.ACTIVE
     action = (
         f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
         if is_active
         else f"<form method='post' action='/actions/monitor/{row['id']}/remonitor'><button>Remonitor</button></form>"
     )
-    planned_expiry = _add_duration(row["started_at"], duration_seconds) if duration_seconds and is_active else None
+    duration_seconds = row["duration_hours"] * 3600 if row["duration_hours"] else default_duration_seconds
+    planned_expiry = _add_duration(row["started_at"], duration_seconds) if is_active and duration_seconds else None
     status = "Active" if is_active else "Finished"
     ended_at = "—" if is_active else _time(row["stopped_at"], timezone_name)
     return (
@@ -143,16 +144,17 @@ def _user_action(row, pending_request) -> str:
     return ""
 
 
-def _users_table(rows_with_actions, timezone_name: str) -> str:
-    rows = [
-        (
+def _users_table(rows, pending_requests: dict[int, int], timezone_name: str) -> str:
+    rendered = []
+    for row in rows:
+        request_id = pending_requests.get(row["telegram_user_id"]) if row["status"] == UserStatus.PENDING else None
+        action = _user_action(row, [request_id] if request_id else None)
+        rendered.append(
             f"<tr><td>{_e(row['display_name'])}<br><span class='muted'>{row['telegram_user_id']}</span></td>"
             f"<td>{_e(row['status'])}</td><td>{_time(row['created_at'], timezone_name)}</td>"
             f"<td>{action or '—'}</td></tr>"
         )
-        for row, action in rows_with_actions
-    ]
-    return _table(["User", "Status", "Created", "Action"], rows, "No users found.")
+    return _table(["User", "Status", "Created", "Action"], rendered, "No users found.")
 
 
 def _delayed_table(rows, default_timezone_name: str) -> str:
@@ -271,13 +273,8 @@ class WebPanel:
 
     async def users(self, request):
         rows = await self.repo.list_users()
-        rows_with_actions = []
-        for row in rows:
-            pending_request = None
-            if row["status"] == UserStatus.PENDING:
-                pending_request = await self.repo.pending_request_for_user(row["telegram_user_id"])
-            rows_with_actions.append((row, _user_action(row, pending_request)))
-        body = f"<h1>Users</h1>{_users_table(rows_with_actions, self.timezone_name)}"
+        pending_requests = await self.repo.pending_request_ids()
+        body = f"<h1>Users</h1>{_users_table(rows, pending_requests, self.timezone_name)}"
         return self.page("Users", body, request.url.path)
 
     async def history(self, request):

@@ -153,7 +153,7 @@ class MonitorManager:
         interval_minutes = interval_minutes or self.interval // 60
         min_delay_minutes = min_delay_minutes or getattr(self.service, "min_delay_minutes", 60)
         duration_seconds = duration_hours * 3600 if duration_hours else self.duration
-        job_id, new_subscription = await self.repo.create_monitor_job(actor_user_id, chat_id, airport, window_hours, interval_minutes, self.max_active_airports, min_delay_minutes)
+        job_id, new_subscription = await self.repo.create_monitor_job(actor_user_id, chat_id, airport, window_hours, interval_minutes, self.max_active_airports, min_delay_minutes, duration_hours)
         job_key = (actor_user_id, airport)
         if job_key in self.jobs:
             self.jobs[job_key].callbacks[(actor_user_id, chat_id)] = notify
@@ -217,7 +217,8 @@ class MonitorManager:
         for row in rows:
             grouped.setdefault((row["actor_user_id"], row["airport"]), []).append(row)
         for (actor_user_id, airport), subscriptions in grouped.items():
-            job_id = subscriptions[0]["id"]
+            job = subscriptions[0]
+            job_id = job["id"]
             stop_event = asyncio.Event()
             callbacks = {
                 (row["telegram_user_id"], row["subscription_chat_id"]): callback_factory(row["telegram_user_id"], row["subscription_chat_id"])
@@ -226,7 +227,13 @@ class MonitorManager:
             state = _JobState(job_id, airport, actor_user_id, stop_event, callbacks)
             self.jobs[(actor_user_id, airport)] = state
             state.task = asyncio.create_task(
-                self._run(job_id, airport, actor_user_id, stop_event, state, subscriptions[0]["started_at"]),
+                self._run(
+                    job_id, airport, actor_user_id, stop_event, state, job["started_at"],
+                    window_hours=job["window_hours"],
+                    interval_minutes=job["interval_minutes"],
+                    min_delay_minutes=job["min_delay_minutes"],
+                    duration_seconds=job["duration_hours"] * 3600 if job["duration_hours"] else None,
+                ),
                 name=f"flightping-monitor-{actor_user_id}-{airport}",
             )
         log.info("restored %d active monitor(s) after restart", len(grouped))

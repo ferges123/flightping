@@ -67,6 +67,14 @@ class FakeMonitor:
 
     def __init__(self):
         self.stopped_users = []
+        self.stopped_user_chats = []
+
+    async def stop_user(self, user_id, chat_id):
+        self.stopped_user_chats.append((user_id, chat_id))
+        return True
+
+    async def stop_user_airport(self, user_id, airport, chat_id):
+        return False
 
     async def stop_user_all(self, user_id):
         self.stopped_users.append(user_id)
@@ -187,6 +195,19 @@ async def test_admin_revocation_stops_user_monitor(tmp_path):
     message = FakeMessage(100, "/revoke 200")
     await handler(message)
     assert monitor.stopped_users == [200]
+
+
+@pytest.mark.asyncio
+async def test_stop_button_stops_all_monitors_without_parsing_button_text_as_an_airport(tmp_path):
+    approved_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), FakeRepo())
+    monitor = FakeMonitor()
+    router = make_monitoring_router(approved_auth, FakeService(), monitor)
+    handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "stop_monitor_button")
+
+    message = FakeMessage(100, "⏹ Stop")
+    await handler(message)
+
+    assert monitor.stopped_user_chats == [(100, 100)]
 
 
 @pytest.mark.asyncio

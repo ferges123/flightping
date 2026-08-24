@@ -68,7 +68,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
         ))
         return language, text
 
-    @router.message(Command("setting", "settings"), F.chat.type == "private")
+    @router.message(Command("settings"), F.chat.type == "private")
     @router.message(F.text == "⚙️ Settings", F.chat.type == "private")
     async def setting(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
@@ -321,7 +321,19 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
         await service.repo.audit(user.id, "monitor_start", "monitor", parts[1].upper(), {"state": monitor_state})
         await message.answer(t(language, "monitor_started" if monitor_state == "started" else "monitor_subscribed", airport=parts[1].upper()), parse_mode=ParseMode.HTML)
 
+    async def stop_all_monitors(message: Message):
+        if not message.from_user or not await auth.is_approved(message.from_user.id):
+            await message.answer(t("en", "no_access"))
+            return
+        language, _ = await preferences(message.from_user.id)
+        changed = await monitor.stop_user(message.from_user.id, message.chat.id)
+        await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
+        await message.answer(t(language, "monitors_stopped" if changed else "monitors_missing"))
+
     @router.message(F.text == "⏹ Stop", F.chat.type == "private")
+    async def stop_monitor_button(message: Message):
+        await stop_all_monitors(message)
+
     @router.message(Command("stop"), F.chat.type == "private")
     async def stop_monitor(message: Message):
         if not message.from_user or not await auth.is_approved(message.from_user.id):
@@ -332,15 +344,13 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager) -> 
         if len(parts) > 2:
             await message.answer(t(language, "stop_usage"))
             return
-        if len(parts) == 2:
-            airport = parts[1].upper()
-            changed = await monitor.stop_user_airport(message.from_user.id, airport, message.chat.id)
-            await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airport)
-            await message.answer(t(language, "monitor_stopped" if changed else "monitor_missing", airport=airport), parse_mode=ParseMode.HTML)
+        if len(parts) == 1:
+            await stop_all_monitors(message)
             return
-        changed = await monitor.stop_user(message.from_user.id, message.chat.id)
-        await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", monitor.airport or "")
-        await message.answer(t(language, "monitors_stopped" if changed else "monitors_missing"))
+        airport = parts[1].upper()
+        changed = await monitor.stop_user_airport(message.from_user.id, airport, message.chat.id)
+        await service.repo.audit(message.from_user.id, "monitor_stop", "monitor", airport)
+        await message.answer(t(language, "monitor_stopped" if changed else "monitor_missing", airport=airport), parse_mode=ParseMode.HTML)
 
     @router.message(F.text == "📊 Status", F.chat.type == "private")
     @router.message(Command("status"), F.chat.type == "private")

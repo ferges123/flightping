@@ -9,15 +9,31 @@ from flightpingbot.web import WebPanel
 class StubMonitor:
     duration = 6 * 3600
 
-    def __init__(self, start_result="started"):
+    def __init__(self, start_result="started", repo=None):
         self.start_result = start_result
+        self.repo = repo
         self.started = []
+        self.stopped_airports = []
+        self.stopped_users = []
 
     async def start(self, actor_user_id, chat_id, airport, notify):
         if isinstance(self.start_result, Exception):
             raise self.start_result
         self.started.append((actor_user_id, airport))
         return self.start_result
+
+    async def stop_user_airport(self, user_id, airport, chat_id=None):
+        """Mirror MonitorManager: stopping also persists the job as stopped."""
+        self.stopped_airports.append((user_id, airport))
+        if self.repo:
+            for row in await self.repo.active_monitor_jobs():
+                if row["actor_user_id"] == user_id and row["airport"] == airport:
+                    await self.repo.stop_monitor_job(row["id"])
+        return True
+
+    async def stop_user_all(self, user_id):
+        self.stopped_users.append(user_id)
+        return True
 
 
 class StubBot:
@@ -133,3 +149,120 @@ async def test_monitoring_page_caps_an_unreasonably_large_page_number(tmp_path):
 
     assert response.status_code == 200
     assert "?page=100000" in body
+
+
+@pytest.mark.asyncio
+async def test_stop_monitor_action_stops_job_and_writes_audit(tmp_path):
+    repo = await _make_repo(tmp_path)
+    job_id, _ = await repo.create_monitor_job(200, 200, "TFS", 9, 30)
+    monitor = StubMonitor(repo=repo)
+    panel = WebPanel(repo, monitor, StubBot(), frozenset({100}))
+
+    try:
+        async with _client(panel) as client:
+            response = await client.post(f"/actions/monitor/200/TFS/stop")
+            await response.aread()
+            job = await repo.monitor_job(job_id)
+            audits = await repo.list_audit(days=1)
+    finally:
+        await repo.db.close()
+
+    assert response.status_code == 200
+    assert job["status"] == "stopped"
+    assert monitor.stopped_airports == [(200, "TFS")]
+    assert any(row["action"] == "monitor_stop" for row in audits)
+
+
+@pytest.mark.asyncio
+async def test_remonitor_action_restarts_a_stopped_job(tmp_path):
+    repo = await _make_repo(tmp_path)
+    stopped_id, _ = await repo.create_monitor_job(200, 200, "TFS", 9, 30)
+    await repo.stop_monitor_job(stopped_id)
+    active_id, _ = await repo.create_monitor_job(200, 200, "WAW", 9, 30)
+    monitor = StubMonitor("started")
+    panel = WebPanel(repo, monitor, StubBot(), frozenset({100}))
+
+    try:
+        async with _client(panel) as client:
+            good = await client.post(f"/actions/monitor/{stopped_id}/remonitor")
+            good_body = (await good.aread()).decode()
+            bad = await client.post(f"/actions/monitor/{active_id}/remonitor")
+            bad_body = (await bad.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "Monitoring for TFS was restarted." in good_body
+    assert monitor.started == [(200, "TFS")]
+    assert "no longer available to restart" in bad_body
+
+
+@pytest.mark.asyncio
+async def test_user_status_action_blocks_user_and_stops_monitors(tmp_path):
+    repo = await _make_repo(tmp_path)
+    monitor = StubMonitor()
+    bot = StubBot()
+    panel = WebPanel(repo, monitor, bot, frozenset({100}))
+
+    try:
+        async with _client(panel) as client:
+            blocked = await client.post("/actions/user/200/blocked")
+            await blocked.aread()
+            user = await repo.user(200)
+            invalid = await client.post("/actions/user/200/nonsense")
+            await invalid.aread()
+            after = await repo.user(200)
+    finally:
+        await repo.db.close()
+
+    assert user["status"] == "blocked"
+    assert monitor.stopped_users == [200]
+    assert after["status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_access_decision_action_approves_and_notifies(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        await repo.sync_admins(frozenset({100}))
+        _, request_id = await repo.upsert_access_request(300, 300, "copilot", "Copilot")
+        monitor = StubMonitor()
+        bot = StubBot()
+        panel = WebPanel(repo, monitor, bot, frozenset({100}))
+
+        async with _client(panel) as client:
+            approve = await client.post(f"/actions/access/{request_id}/approve")
+            await approve.aread()
+            approved = await repo.user(300)
+            deny_again = await client.post(f"/actions/access/{request_id}/deny")
+            await deny_again.aread()
+            still_approved = await repo.user(300)
+
+        assert approved["status"] == "approved"
+        assert any(chat == 300 and "Access granted" in text for chat, text in bot.sent)
+        assert still_approved["status"] == "approved"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_users_page_lists_pending_actions_without_per_user_queries(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        await repo.sync_admins(frozenset({100}))
+        for user_id in (301, 302):
+            await repo.upsert_access_request(user_id, user_id, f"user{user_id}", f"User {user_id}")
+        pending = await repo.pending_request_ids()
+        assert len(pending) == 2
+
+        monitor = StubMonitor()
+        panel = WebPanel(repo, monitor, StubBot(), frozenset({100}))
+        async with _client(panel) as client:
+            response = await client.get("/users")
+            body = (await response.aread()).decode()
+
+        assert "/actions/access/" in body
+        assert body.count(">Approve<") == 2
+    finally:
+        await db.close()
