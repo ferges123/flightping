@@ -62,8 +62,8 @@ class InboundSecurityMiddleware(BaseMiddleware):
                 except Exception:
                     pass
                 return None
-            # Any valid message is activity and extends the inactivity window.
-            await state.update_data(_flightping_state_started_at=now)
+            # The timestamp is refreshed once, after the handler runs (see
+            # below) — a pre-handler update would always be overwritten.
 
         result = await handler(event, data)
 
