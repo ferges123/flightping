@@ -87,5 +87,5 @@ MESSAGES = {
 }
 
 
-def t(language: str | None, key: str, **values) -> str:
-    return MESSAGES.get(language if language in LANGUAGES else "en", MESSAGES["en"])[key].format(**values)
+def t(lang: str | None, key: str, **values) -> str:
+    return MESSAGES.get(lang if lang in LANGUAGES else "en", MESSAGES["en"])[key].format(**values)
