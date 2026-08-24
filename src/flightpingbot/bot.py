@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
+from . import __version__
 from .aeroapi import AeroAPI
 from .auth import Auth
 from .config import Settings
@@ -127,6 +128,7 @@ async def run(settings: Settings) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", force=True)
+    log.info("FlightPingBot %s starting", __version__)
     try:
         env_file = Path("config/flightpingbot.env")
         settings = Settings.from_env(env_file if env_file.exists() else None)
