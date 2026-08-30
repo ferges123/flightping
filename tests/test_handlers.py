@@ -6,7 +6,7 @@ import pytest
 from flightpingbot.auth import Auth
 from flightpingbot.config import Settings
 from flightpingbot.handlers.admin import make_router as make_admin_router
-from flightpingbot.handlers.admin import _audit_actor_label
+from flightpingbot.handlers.admin import _audit_actor_label, _human_size
 from flightpingbot.handlers.monitoring import make_router as make_monitoring_router
 from flightpingbot.errors import user_facing_error
 from flightpingbot.formatting import format_check
@@ -88,6 +88,13 @@ class FakeMonitor:
 
 def auth(tmp_path):
     return Auth(Settings("bot", frozenset({100}), Path(tmp_path)), FakeRepo())
+
+
+def test_human_size_uses_compact_binary_units():
+    assert _human_size(0) == "0 B"
+    assert _human_size(1023) == "1023 B"
+    assert _human_size(4152) == "4.1 KB"
+    assert _human_size(1_593_344) == "1.5 MB"
 
 
 @pytest.mark.asyncio
@@ -312,6 +319,9 @@ class SettingsRepo(FakeRepo):
         return {"language": self.languages[user_id], "window_hours": None,
                 "interval_minutes": None, "min_delay_minutes": None, "duration_hours": None}
 
+    async def usage(self, since, actor_user_id=None):
+        return {"total": 7, "success": 7, "errors": 0, "retries": 0}
+
     async def update_user_settings(self, user_id, *, language=None, reset=False, **kwargs):
         if reset:
             self.languages.pop(user_id, None)
@@ -328,13 +338,15 @@ async def test_language_switch_updates_the_users_command_menu(tmp_path):
     router = make_monitoring_router(approved_auth, service, FakeMonitor(), bot=bot_stub)
     handler = next(item.callback for item in router.callback_query.handlers if item.callback.__name__ == "change_setting")
 
-    await handler(FakeCallback(100, "setting:language:pl"))
+    callback = FakeCallback(100, "setting:language:pl")
+    await handler(callback)
 
     assert len(bot_stub.command_scopes) == 1
     commands, scope = bot_stub.command_scopes[0]
     assert getattr(scope, "chat_id", None) == 100
     descriptions = {command.description for command in commands}
     assert "Uruchom monitorowanie lotniska" in descriptions
+    assert "Zapytania AeroAPI w tym miesiącu: 7" in callback.edited[0]
     # A fresh message must carry the localized reply keyboard so the device
     # actually swaps it.
     assert any(reply_markup is not None for _, _, reply_markup in bot_stub.sent_messages)

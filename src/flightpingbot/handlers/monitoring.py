@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand, BotCommandScopeChat, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from datetime import datetime, timezone
 
 from ..auth import Auth
 from ..errors import user_facing_error
@@ -57,6 +58,11 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
 
     async def settings_text(user_id: int) -> tuple[str, str]:
         language, values = await preferences(user_id)
+        now = datetime.now(timezone.utc)
+        usage = await service.repo.usage(
+            now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(),
+            user_id,
+        )
         text = "\n".join((
             t(language, "settings_title"), "",
             t(language, "settings_language", language="Polski" if language == "pl" else "English"),
@@ -64,6 +70,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             t(language, "settings_interval", value=values["interval_minutes"]),
             t(language, "settings_delay", value=values["min_delay_minutes"]),
             t(language, "settings_duration", value=values["duration_hours"]), "",
+            t(language, "settings_monthly_usage", value=usage["total"] or 0), "",
             t(language, "settings_note"),
         ))
         return language, text

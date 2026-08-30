@@ -30,6 +30,7 @@ main { max-width: 1100px; margin: 1.25rem auto; padding: 0 1rem; }
 table { width: 100%; border-collapse: collapse; margin: .75rem 0 1.5rem; overflow: hidden; }
 th, td { text-align: left; padding: .65rem .75rem; border-bottom: 1px solid #edf0f2; vertical-align: top; }
 th { background: #f8fafb; font-size: .85rem; } tr:last-child td { border-bottom: 0; }
+.usage-details { display: none; }
 button { border: 0; border-radius: 5px; padding: .4rem .65rem; cursor: pointer; background: #1769aa; color: white; }
 button.danger { background: #b42318; } button.secondary { background: #687582; }
 form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
@@ -42,7 +43,7 @@ form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
 .notice { margin: .75rem 0; padding: .65rem .8rem; color: #155724; background: #edf8ef; border: 1px solid #c8e6cc; border-radius: 6px; }
 .pagination { display: flex; gap: .5rem; justify-content: flex-end; margin: -.75rem 0 1.5rem; }
 .pagination a { padding: .4rem .65rem; border-radius: 5px; background: #1769aa; color: white; text-decoration: none; }
-@media (max-width: 650px) { table { display: block; overflow-x: auto; white-space: nowrap; } .monitor-form { grid-template-columns: 1fr; } .monitor-form button { width: 100%; } }
+@media (max-width: 650px) { header nav { display: flex; justify-content: space-between; align-items: center; } header a { margin-right: 0; } table { display: block; overflow-x: auto; white-space: nowrap; } .settings-page table { display: table; overflow: visible; white-space: normal; table-layout: fixed; } .settings-page th, .settings-page td { overflow-wrap: anywhere; } .settings-page .usage-table { display: block; border: 0; background: transparent; margin-bottom: 1.5rem; } .settings-page .usage-table thead { display: none; } .settings-page .usage-table tbody { display: grid; gap: .65rem; } .settings-page .usage-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #dce2e7; border-radius: 8px; overflow: hidden; background: white; } .settings-page .usage-table td { padding: .55rem .7rem; border-bottom: 1px solid #edf0f2; } .settings-page .usage-table td:first-child { grid-column: 1 / -1; font-weight: 700; background: #f8fafb; } .settings-page .usage-table td:nth-last-child(-n + 2) { border-bottom: 0; } .settings-page .usage-table td[data-label]::before { content: attr(data-label) ": "; color: #687582; font-size: .8rem; } .settings-page .usage-by-user-table { display: table; border: 1px solid #dce2e7; border-radius: 8px; background: white; overflow: hidden; } .settings-page .usage-by-user-table thead { display: table-header-group; } .settings-page .usage-by-user-table tbody { display: table-row-group; } .settings-page .usage-by-user-table tr { display: table-row; border: 0; background: transparent; } .settings-page .usage-by-user-table td { border-bottom: 1px solid #edf0f2; } .settings-page .usage-by-user-table td:first-child { background: transparent; } .settings-page .usage-by-user-table td:nth-child(2)::before { content: none; } .settings-page .usage-by-user-table th:nth-child(3), .settings-page .usage-by-user-table th:nth-child(4), .settings-page .usage-by-user-table th:nth-child(5), .settings-page .usage-by-user-table td:nth-child(3), .settings-page .usage-by-user-table td:nth-child(4), .settings-page .usage-by-user-table td:nth-child(5) { display: none; } .settings-page .usage-by-user-table .usage-details { display: table-cell; } .monitor-form { grid-template-columns: 1fr; } .monitor-form button { width: 100%; } }
 """
 
 MAX_PAGE = 100_000
@@ -192,12 +193,13 @@ def _pagination(base_path: str, page: int, has_next: bool) -> str:
 class WebPanel:
     """Small server-rendered admin panel sharing the bot's repository."""
 
-    def __init__(self, repo, monitor, bot, admin_ids: frozenset[int], timezone_name: str = "Atlantic/Canary"):
+    def __init__(self, repo, monitor, bot, admin_ids: frozenset[int], timezone_name: str = "Atlantic/Canary", app_settings=None):
         self.repo = repo
         self.monitor = monitor
         self.bot = bot
         self.admin_ids = admin_ids
         self.timezone_name = timezone_name
+        self.app_settings = app_settings
 
     def app(self) -> Starlette:
         routes = [
@@ -207,6 +209,7 @@ class WebPanel:
             Route("/users", self.users),
             Route("/history", self.history),
             Route("/successes", self.successes),
+            Route("/settings", self.settings),
             Route("/actions/monitor/start", self.start_monitor, methods=["POST"]),
             Route("/actions/monitor/{user_id:int}/{airport}/stop", self.stop_monitor, methods=["POST"]),
             Route("/actions/monitor/{job_id:int}/remonitor", self.remonitor, methods=["POST"]),
@@ -221,24 +224,27 @@ class WebPanel:
 
     def page(self, title: str, body: str, refresh_path: str = "/") -> HTMLResponse:
         now = datetime.now(timezone.utc).astimezone(ZoneInfo(self.timezone_name)).strftime("%Y-%m-%d %H:%M:%S %Z")
-        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Dashboard</a><a href='/monitoring'>Monitoring</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delayed flights</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
+        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Start</a><a href='/monitoring'>Monitor</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delays</a><a href='/settings' aria-label='Settings' title='Settings'>⚙</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
         return HTMLResponse(html)
 
     async def dashboard(self, request):
         # Four aggregates should tell one coherent story; group the reads so a
         # concurrent write transaction cannot be half-visible between them.
+        now = datetime.now(timezone.utc)
         async with self.repo.db.consistent_reads():
             counts = await self.repo.user_counts()
             jobs = await self.repo.active_monitor_jobs()
             checks = await self.repo.recent_checks(limit=8)
-            usage = await self.repo.usage(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+            daily_usage = await self.repo.usage(now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+            monthly_usage = await self.repo.usage(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat())
         cards = "".join(
             _metric_card(label, value)
             for label, value in (
                 ("Pending users", counts.get(UserStatus.PENDING, 0)),
                 ("Approved users", counts.get(UserStatus.APPROVED, 0)),
                 ("Active monitors", len(jobs)),
-                ("API requests today", usage["total"] or 0),
+                ("API requests today", daily_usage["total"] or 0),
+                ("API requests this month", monthly_usage["total"] or 0),
             )
         )
         body = f"<h1>Admin dashboard</h1><div class='grid'>{cards}</div><h2>Recent checks</h2>{_checks_table(checks, self.timezone_name)}"
@@ -303,6 +309,91 @@ class WebPanel:
             f"{_delayed_table(rows, self.timezone_name)}"
         )
         return self.page("Delayed flights", body, request.url.path)
+
+    async def settings(self, request):
+        settings = self.app_settings
+        if settings is None:
+            body = "<h1>Settings</h1><p class='muted'>Configuration details are unavailable in this panel.</p>"
+            return self.page("Settings", body, request.url.path)
+
+        now = datetime.now(timezone.utc)
+        monthly_since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        async with self.repo.db.consistent_reads():
+            daily_usage = await self.repo.usage(now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+            monthly_usage = await self.repo.usage(monthly_since)
+            monthly_usage_by_user = await self.repo.usage_by_user(monthly_since)
+
+        def value(name: str, suffix: str = "") -> str:
+            return f"{_e(getattr(settings, name))}{suffix}"
+
+        def limit(name: str) -> str:
+            configured = getattr(settings, name)
+            return "Unlimited" if configured == 0 else str(configured)
+
+        def settings_table(rows: list[tuple[str, str]]) -> str:
+            return _table(["Setting", "Current value"], [f"<tr><td>{_e(label)}</td><td>{current}</td></tr>" for label, current in rows], "")
+
+        def usage_table(first_column: str, rows: list[tuple[str, object]], empty_message: str = "", css_class: str = "usage-table", mobile_details: bool = False) -> str:
+            if not rows:
+                return f"<p>{_e(empty_message)}</p>"
+            details_header = "<th class='usage-details'>Details</th>" if mobile_details else ""
+            def usage_row(label: str, row) -> str:
+                details = (
+                    f"<td class='usage-details'>✓ {row['success'] or 0} · errors {row['errors'] or 0} · retries {row['retries'] or 0}</td>"
+                    if mobile_details else ""
+                )
+                return (
+                    f"<tr><td>{_e(label)}</td><td data-label='Requests'>{row['total'] or 0}</td>"
+                    f"<td data-label='Successes'>{row['success'] or 0}</td><td data-label='Errors'>{row['errors'] or 0}</td>"
+                    f"<td data-label='Retries'>{row['retries'] or 0}</td>{details}</tr>"
+                )
+            table_rows = "".join(usage_row(label, row) for label, row in rows)
+            return (
+                f"<table class='{_e(css_class)}'><thead><tr>"
+                f"<th>{_e(first_column)}</th><th>Requests</th><th>Successes</th><th>Errors</th><th>Retries</th>"
+                f"{details_header}</tr></thead><tbody>{table_rows}</tbody></table>"
+            )
+
+        api = settings_table([
+            ("Daily API request limit", limit("daily_api_request_limit")),
+            ("Monthly API request limit", limit("monthly_api_request_limit")),
+            ("Usage warning threshold", value("usage_warning_percent", "%")),
+            ("Request cooldown", value("user_request_cooldown_seconds", " s")),
+        ])
+        usage = usage_table("Period", [("Today", daily_usage), ("This month", monthly_usage)])
+        usage_by_user = usage_table(
+            "User",
+            [(row["user_name"], row) for row in monthly_usage_by_user],
+            "No API requests have been recorded this month.",
+            "usage-table usage-by-user-table",
+            True,
+        )
+        monitoring = settings_table([
+            ("Default check window", value("monitor_window_hours", " h")),
+            ("Default monitor interval", value("monitor_interval_minutes", " min")),
+            ("Default monitoring duration", value("monitor_duration_hours", " h")),
+            ("Default delay threshold", value("min_delay_minutes", " min")),
+            ("Maximum active airports per user", value("max_active_airports")),
+        ])
+        retention = settings_table([
+            ("Flight observations", value("observation_retention_days", " days")),
+            ("API request records", value("api_request_retention_days", " days")),
+            ("Checks", value("check_retention_days", " days")),
+            ("Alerts", value("alert_retention_days", " days")),
+            ("Monitoring history", value("monitor_job_retention_days", " days")),
+            ("Audit log", value("audit_retention_days", " days")),
+        ])
+        body = (
+            "<section class='settings-page'><h1>Settings</h1>"
+            "<p class='muted'>Read-only application configuration. Update environment variables and restart FlightPing to apply changes. Tokens and API keys are intentionally never shown here.</p>"
+            f"<h2>Current API usage</h2>{usage}"
+            f"<h2>API usage by user — this month</h2>{usage_by_user}"
+            f"<h2>API controls</h2>{api}"
+            f"<h2>Monitoring defaults</h2>{monitoring}"
+            f"<h2>Data retention</h2>{retention}"
+            f"<h2>Regional settings</h2>{settings_table([('Timezone', _e(settings.timezone_name))])}</section>"
+        )
+        return self.page("Settings", body, request.url.path)
 
     async def stop_monitor(self, request):
         user_id = int(request.path_params["user_id"])

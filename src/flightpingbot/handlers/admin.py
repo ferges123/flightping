@@ -26,6 +26,19 @@ def _audit_actor_label(row) -> str:
     return "web" if metadata.get("source") == "web" else "-"
 
 
+def _human_size(size_bytes: int) -> str:
+    """Format a byte count for concise status messages."""
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = max(0, size_bytes)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{size} {unit}"
+            return f"{size:.1f}".rstrip("0").rstrip(".") + f" {unit}"
+        size /= 1024
+    raise AssertionError("unreachable")
+
+
 def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
     router = Router(name="admin")
 
@@ -284,7 +297,9 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         db_path = repo.db.path
         wal_path = db_path.with_name(db_path.name + "-wal")
         backups = sorted((auth.settings.state_dir / "backups").glob("flightpingbot-*.sqlite3"), reverse=True)
-        await message.answer(f"<b>Database status</b>\n\nDB: {db_path.stat().st_size if db_path.exists() else 0} bytes\nWAL: {wal_path.stat().st_size if wal_path.exists() else 0} bytes\nBackups: {len(backups)}\nLatest backup: {backups[0].name if backups else 'none'}", parse_mode="HTML")
+        db_size = _human_size(db_path.stat().st_size if db_path.exists() else 0)
+        wal_size = _human_size(wal_path.stat().st_size if wal_path.exists() else 0)
+        await message.answer(f"<b>Database status</b>\n\nDB: {db_size}\nWAL: {wal_size}\nBackups: {len(backups)}\nLatest backup: {backups[0].name if backups else 'none'}", parse_mode="HTML")
 
     @router.message(F.text.in_(button_texts("btn_stop_all")), F.chat.type == "private")
     @router.message(Command("stopall"), F.chat.type == "private")

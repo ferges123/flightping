@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from types import SimpleNamespace
 
 from flightpingbot.database import Database
 from flightpingbot.repositories import Repository
@@ -77,6 +78,65 @@ async def test_start_monitor_reports_per_user_limit_instead_of_erroring(tmp_path
         await repo.db.close()
 
     assert "The maximum of 3 active airports has been reached." in body
+
+
+@pytest.mark.asyncio
+async def test_dashboard_shows_monthly_api_request_counter(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
+    try:
+        check_id = await repo.create_check(200, "TFS", 9)
+        await repo.record_api_request(check_id, "airports/TFS", 200, 12, retry_number=1)
+        async with _client(panel) as client:
+            response = await client.get("/")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "API requests this month" in body
+    assert "<div class='metric'>2</div>" in body
+
+
+@pytest.mark.asyncio
+async def test_settings_page_shows_safe_read_only_application_configuration(tmp_path):
+    repo = await _make_repo(tmp_path)
+    settings = SimpleNamespace(
+        daily_api_request_limit=100,
+        monthly_api_request_limit=1000,
+        usage_warning_percent=80,
+        user_request_cooldown_seconds=5,
+        monitor_window_hours=9,
+        monitor_interval_minutes=30,
+        monitor_duration_hours=6,
+        min_delay_minutes=60,
+        max_active_airports=3,
+        observation_retention_days=7,
+        api_request_retention_days=90,
+        check_retention_days=90,
+        alert_retention_days=180,
+        monitor_job_retention_days=30,
+        audit_retention_days=180,
+        timezone_name="Europe/Warsaw",
+    )
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}), app_settings=settings)
+    try:
+        check_id = await repo.create_check(200, "TFS", 9)
+        await repo.record_api_request(check_id, "airports/TFS", 200, 12)
+        async with _client(panel) as client:
+            response = await client.get("/settings")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "Monitoring defaults" in body
+    assert "Current API usage" in body
+    assert "This month" in body
+    assert "API usage by user — this month" in body
+    assert "@pilot" in body
+    assert "Monthly API request limit" in body
+    assert "1000" in body
+    assert "Europe/Warsaw" in body
+    assert "Tokens and API keys are intentionally never shown here." in body
 
 
 @pytest.mark.asyncio
