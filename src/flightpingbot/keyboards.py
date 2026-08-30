@@ -9,6 +9,7 @@ USER_BUTTON_ROWS = (
     ("btn_stop", "btn_status"),
     ("btn_hide", "btn_help"),
     ("btn_aeroapi", "btn_settings"),
+    ("btn_favorites",),
 )
 ADMIN_BUTTON_ROWS = (
     ("btn_users", "btn_usage"),

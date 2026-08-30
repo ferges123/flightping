@@ -8,6 +8,7 @@ The bot works only in private Telegram chats. Access is granted by an administra
 
 - administrator-approved access requests;
 - one-off airport checks using three-letter IATA codes;
+- personal favorite-airport shortcuts for quick checks and monitoring;
 - recurring airport monitoring;
 - alerts for flights exceeding the configured delay threshold;
 - separate AeroAPI credentials for each user;
@@ -31,6 +32,12 @@ http://127.0.0.1:8080/
 To change the bind address or port, set `FPB_WEB_HOST` and `FPB_WEB_PORT` in
 the environment file. For remote access, keep the application bound to
 loopback and publish it through the Caddy reverse proxy.
+
+The panel includes the dashboard, monitoring, users, history, delayed flights,
+and a read-only **Settings** page. The dashboard and Settings page show total
+API usage for today and the current month; Settings also includes the current
+month's per-user usage. It displays operational configuration and retention
+values, but deliberately never exposes bot tokens or AeroAPI keys.
 
 ## Requirements
 
@@ -112,7 +119,8 @@ All commands work in a private chat with the bot.
 | `/check TFS` | Run a one-off scheduled departure check. |
 | `/monitor TFS` | Start monitoring an airport. |
 | `/status` | Show active monitoring subscriptions. |
-| `/settings` | Change language and defaults for new checks and monitoring; resetting restores the default English menu and keyboard. |
+| `/favorites` | Manage up to 8 favorite airports; quickly check or monitor a saved airport. |
+| `/settings` | Change language and defaults for new checks and monitoring; shows personal API usage for the current month. Resetting restores the default English menu and keyboard. |
 | `/stop` | Stop your monitoring subscriptions. |
 | `/aeroapi` | Set or replace your AeroAPI key. |
 | `/aeroapi status` | Show whether an AeroAPI key is configured. |
@@ -124,6 +132,13 @@ All commands work in a private chat with the bot.
 | `/hide` | Hide the Telegram keyboard. |
 
 Airport values must be three-letter ASCII IATA codes, for example `WAW`, `TFS`, or `LHR`.
+
+### Favorite airports
+
+Use `/favorites` or the `⭐ Favorites` keyboard button to add or remove an
+airport. A saved airport opens actions to check it immediately or start its
+monitoring. Favorites are private to each user, are not created automatically
+by checks, and are limited to eight airports per user.
 
 ## Administrator commands
 

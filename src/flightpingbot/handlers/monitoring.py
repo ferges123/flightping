@@ -24,6 +24,7 @@ class InputState(StatesGroup):
     check_airport = State()
     monitor_airport = State()
     aeroapi_key = State()
+    favorite_airport = State()
 
 
 def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot=None) -> Router:
@@ -55,6 +56,21 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             [InlineKeyboardButton(text=f"{value}{suffix}", callback_data=f"setting:{kind}:{value}") for value in values],
             [InlineKeyboardButton(text=t(language, "set_back"), callback_data="setting:back")],
         ])
+
+    async def favorites_view(user_id: int) -> tuple[str, str, InlineKeyboardMarkup]:
+        language, _ = await preferences(user_id)
+        favorites = await service.repo.favorite_airports(user_id)
+        airports = [row["airport"] for row in favorites]
+        rows = [
+            [InlineKeyboardButton(text=airport, callback_data=f"favorite:open:{airport}") for airport in airports[index:index + 3]]
+            for index in range(0, len(airports), 3)
+        ]
+        controls = [InlineKeyboardButton(text=t(language, "favorites_add"), callback_data="favorite:add")]
+        if airports:
+            controls.append(InlineKeyboardButton(text=t(language, "favorites_remove"), callback_data="favorite:remove_menu"))
+        rows.append(controls)
+        text = t(language, "favorites_title") + "\n\n" + (" · ".join(airports) if airports else t(language, "favorites_empty"))
+        return language, text, InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def settings_text(user_id: int) -> tuple[str, str]:
         language, values = await preferences(user_id)
@@ -138,6 +154,102 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=settings_keyboard(language))
         label = t(language, f"settings_{kind}", value="{value}").split(":", 1)[0]
         await callback.answer(t(language, "settings_saved", label=label, value=f"{value}{' h' if kind in {'window', 'duration'} else ' min'}"))
+
+    @router.message(Command("favorites"), F.chat.type == "private")
+    @router.message(F.text.in_(button_texts("btn_favorites")), F.chat.type == "private")
+    async def favorites(message: Message):
+        if not message.from_user or not await auth.is_approved(message.from_user.id):
+            await message.answer(t("en", "no_access"))
+            return
+        _, text, keyboard = await favorites_view(message.from_user.id)
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+    @router.callback_query(F.data.startswith("favorite:"))
+    async def favorite_action(callback: CallbackQuery, state: FSMContext):
+        user = callback.from_user
+        if not user or not await auth.is_approved(user.id):
+            await callback.answer(t("en", "no_access"), show_alert=True)
+            return
+        language, values = await preferences(user.id)
+        _, action, *raw_airport = callback.data.split(":")
+        airport = raw_airport[0] if raw_airport else ""
+        if action == "add":
+            await state.set_state(InputState.favorite_airport)
+            await callback.message.edit_text(t(language, "favorites_prompt"))
+            await callback.answer()
+            return
+        if action == "back":
+            _, text, keyboard = await favorites_view(user.id)
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            await callback.answer()
+            return
+        if action == "remove_menu":
+            favorites = await service.repo.favorite_airports(user.id)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=row["airport"], callback_data=f"favorite:remove:{row['airport']}")]
+                for row in favorites
+            ] + [[InlineKeyboardButton(text=t(language, "favorites_back"), callback_data="favorite:back")]])
+            await callback.message.edit_text(t(language, "favorites_remove_title"), parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            await callback.answer()
+            return
+        if action == "remove":
+            if await service.repo.remove_favorite_airport(user.id, airport):
+                await service.repo.audit(user.id, "favorite_remove", "favorite_airport", airport)
+                await callback.answer(t(language, "favorites_removed", airport=airport))
+            _, text, keyboard = await favorites_view(user.id)
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            return
+        if action == "open":
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t(language, "favorites_check"), callback_data=f"favorite:check:{airport}"), InlineKeyboardButton(text=t(language, "favorites_monitor"), callback_data=f"favorite:monitor:{airport}")],
+                [InlineKeyboardButton(text=t(language, "favorites_back"), callback_data="favorite:back")],
+            ])
+            await callback.message.edit_text(f"⭐ <b>{airport}</b>", parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            await callback.answer()
+            return
+        try:
+            if action == "check":
+                result = await service.check(user.id, airport, window_hours=values["window_hours"], min_delay_minutes=values["min_delay_minutes"])
+                await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": airport, "source": "favorite"})
+                await callback.message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
+            elif action == "monitor":
+                async def notify(result):
+                    current_language, _ = await preferences(user.id)
+                    await callback.message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+                monitor_state = await monitor.start(user.id, callback.message.chat.id, airport, notify, **values)
+                await service.repo.audit(user.id, "monitor_start", "monitor", airport, {"state": monitor_state, "source": "favorite"})
+                await callback.message.answer(t(language, "monitor_started" if monitor_state == "started" else "monitor_subscribed", airport=airport), parse_mode=ParseMode.HTML)
+            else:
+                await callback.answer()
+                return
+        except (RuntimeError, ValueError) as exc:
+            await callback.answer(user_facing_error(exc, language), show_alert=True)
+            return
+        await callback.answer()
+
+    @router.message(InputState.favorite_airport, ~F.text.startswith("/"), F.chat.type == "private")
+    async def favorite_airport_input(message: Message, state: FSMContext):
+        user = message.from_user
+        if not user or not await auth.is_approved(user.id):
+            await state.clear()
+            await message.answer(t("en", "no_access"))
+            return
+        language, _ = await preferences(user.id)
+        try:
+            status = await service.repo.add_favorite_airport(user.id, message.text or "")
+        except ValueError as exc:
+            if "up to" in str(exc):
+                await message.answer(t(language, "favorites_limit"))
+            else:
+                await message.answer(user_facing_error(exc, language) + t(language, "try_again"))
+            return
+        airport = (message.text or "").strip().upper()
+        await state.clear()
+        if status == "added":
+            await service.repo.audit(user.id, "favorite_add", "favorite_airport", airport)
+            await message.answer(t(language, "favorites_added", airport=airport), parse_mode=ParseMode.HTML)
+        else:
+            await message.answer(t(language, "favorites_exists", airport=airport), parse_mode=ParseMode.HTML)
 
     @router.message(F.text.in_(button_texts("btn_aeroapi")), F.chat.type == "private")
     @router.message(Command("aeroapi"), F.chat.type == "private")

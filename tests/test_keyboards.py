@@ -12,6 +12,7 @@ EN_SNAPSHOT = {
     "btn_help": "❓ Help",
     "btn_aeroapi": "🔐 AeroAPI",
     "btn_settings": "⚙️ Settings",
+    "btn_favorites": "⭐ Favorites",
     "btn_users": "👥 Users",
     "btn_usage": "📈 Usage",
     "btn_admin_status": "⚙️ Admin status",
@@ -47,11 +48,11 @@ def test_button_texts_covers_both_languages_for_filters():
 def test_main_keyboard_renders_labels_for_requested_language():
     keyboard_en = main_keyboard(is_admin=False, language="en")
     labels_en = [button.text for row in keyboard_en.keyboard for button in row]
-    assert "🔎 Check" in labels_en and len(labels_en) == 8
+    assert "🔎 Check" in labels_en and "⭐ Favorites" in labels_en and len(labels_en) == 9
 
     keyboard_pl = main_keyboard(is_admin=False, language="pl")
     labels_pl = [button.text for row in keyboard_pl.keyboard for button in row]
-    assert "🔎 Sprawdź" in labels_pl and "⚙️ Ustawienia" in labels_pl
+    assert "🔎 Sprawdź" in labels_pl and "⚙️ Ustawienia" in labels_pl and "⭐ Ulubione" in labels_pl
 
 
 def test_main_keyboard_appends_admin_rows_only_for_admins():

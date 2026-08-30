@@ -5,11 +5,12 @@ from .alerts import AlertRepository
 from .audit import AuditRepository
 from .checks import CheckRepository
 from .credentials import CredentialRepository
+from .favorites import FavoriteAirportRepository
 from .monitors import MonitorJobRepository
 from .users import UserRepository
 
 
-class Repository(UserRepository, AuditRepository, CheckRepository, AlertRepository, MonitorJobRepository, CredentialRepository):
+class Repository(UserRepository, AuditRepository, CheckRepository, AlertRepository, MonitorJobRepository, CredentialRepository, FavoriteAirportRepository):
     """Facade over the domain repositories.
 
     Keeps the single-object API consumed by the bot, services, handlers and
@@ -23,6 +24,7 @@ class Repository(UserRepository, AuditRepository, CheckRepository, AlertReposito
         CheckRepository.__init__(self, db)
         AlertRepository.__init__(self, db)
         MonitorJobRepository.__init__(self, db)
+        FavoriteAirportRepository.__init__(self, db)
 
 
 __all__ = ["Repository"]

@@ -164,6 +164,16 @@ MIGRATIONS = [
     """
     ALTER TABLE monitor_jobs ADD COLUMN duration_hours INTEGER;
     """,
+    """
+    CREATE TABLE user_favorite_airports (
+      telegram_user_id INTEGER NOT NULL REFERENCES users(telegram_user_id),
+      airport TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (telegram_user_id, airport)
+    );
+    CREATE INDEX user_favorite_airports_created_at
+      ON user_favorite_airports(telegram_user_id, created_at);
+    """,
 ]
 
 

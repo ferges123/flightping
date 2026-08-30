@@ -95,6 +95,30 @@ async def test_recent_checks_supports_pagination(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_favorite_airports_are_unique_limited_and_private(tmp_path):
+    db = await Database(tmp_path / "test.sqlite3").connect()
+    try:
+        repo = Repository(db)
+        await repo.sync_admins(frozenset({100}))
+        for user_id in (200, 201):
+            await repo.upsert_access_request(user_id, user_id, f"user{user_id}", f"User {user_id}")
+        await repo.decide_request(1, 100, True)
+        await repo.decide_request(2, 100, True)
+        assert await repo.add_favorite_airport(200, "waw") == "added"
+        assert await repo.add_favorite_airport(200, "WAW") == "exists"
+        assert [row["airport"] for row in await repo.favorite_airports(200)] == ["WAW"]
+        assert await repo.favorite_airports(201) == []
+        for airport in ("TFS", "KRK", "GDN", "LHR", "CDG", "FRA", "MAD"):
+            assert await repo.add_favorite_airport(200, airport) == "added"
+        with pytest.raises(ValueError, match="up to 8"):
+            await repo.add_favorite_airport(200, "FCO")
+        assert await repo.remove_favorite_airport(200, "WAW") is True
+        assert await repo.remove_favorite_airport(200, "WAW") is False
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_monitor_jobs_supports_pagination(tmp_path):
     db = await Database(tmp_path / "test.sqlite3").connect()
     try:
