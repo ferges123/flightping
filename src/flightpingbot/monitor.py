@@ -112,10 +112,19 @@ class FlightService:
             raise
 
     async def test_aeroapi(self, actor_user_id: int) -> int:
+        now = datetime.now(timezone.utc)
+        daily_used = await self.repo.api_request_count(now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id)
+        monthly_used = await self.repo.api_request_count(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(), actor_user_id)
+        if self.daily_limit and daily_used >= self.daily_limit:
+            raise RuntimeError("The daily AeroAPI request limit has been reached.")
+        if self.monthly_limit and monthly_used >= self.monthly_limit:
+            raise RuntimeError("The monthly AeroAPI request limit has been reached.")
         api_key = await self.repo.aeroapi_key(actor_user_id)
         if not api_key:
             raise MissingApiKeyError()
+        await self._enforce_request_cooldown(actor_user_id)
         status, error = await self.aeroapi.validate_key(api_key)
+        await self.repo.record_api_request(None, "account/usage", status, 0, error=error, actor_user_id=actor_user_id)
         if status in {401, 403}:
             await self.repo.mark_aeroapi_key_invalid(actor_user_id)
         if error:

@@ -28,6 +28,7 @@ class InboundSecurityMiddleware(BaseMiddleware):
         user_id = user.id if user else event.chat.id
         text = event.text or ""
         now = time.monotonic()
+        state_now = time.time()
         is_cancel = text.strip().split(maxsplit=1)[0].split("@", 1)[0] == "/cancel" if text.strip() else False
 
         # Keep the emergency cancellation path available even during throttling.
@@ -53,7 +54,7 @@ class InboundSecurityMiddleware(BaseMiddleware):
             started = state_data.get("_flightping_state_started_at")
             if (
                 started is not None
-                and now - float(started) >= self.state_ttl_seconds
+                and state_now - float(started) >= self.state_ttl_seconds
                 and not is_cancel
             ):
                 await state.clear()
@@ -71,5 +72,5 @@ class InboundSecurityMiddleware(BaseMiddleware):
         if state:
             new_state = await state.get_state()
             if new_state:
-                await state.update_data(_flightping_state_started_at=time.monotonic())
+                await state.update_data(_flightping_state_started_at=time.time())
         return result

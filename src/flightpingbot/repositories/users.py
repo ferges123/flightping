@@ -63,7 +63,7 @@ class UserRepository(BaseRepository):
         if current and current["status"] == UserStatus.APPROVED:
             return UserStatus.APPROVED, None
         if current and current["status"] == UserStatus.DENIED:
-            recent = await (await self.db.execute(f"SELECT decided_at FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.DENIED}' ORDER BY decided_at DESC LIMIT 1", (user_id,))).fetchone()
+            recent = await (await self.db.execute("SELECT decided_at FROM access_requests WHERE telegram_user_id=? AND status=? ORDER BY decided_at DESC LIMIT 1", (user_id, AccessRequestStatus.DENIED))).fetchone()
             if recent and recent[0]:
                 try:
                     if datetime.now(timezone.utc) - datetime.fromisoformat(recent[0]) < timedelta(hours=24):
@@ -73,11 +73,11 @@ class UserRepository(BaseRepository):
         await self.db.execute("""INSERT INTO users(telegram_user_id,chat_id,username,display_name,status,is_admin,created_at,updated_at)
             VALUES(?,?,?,?,?,0,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=?, username=?, display_name=?, updated_at=?""",
             (user_id, chat_id, username, display_name, UserStatus.PENDING, now, now, chat_id, username, display_name, now))
-        pending = await (await self.db.execute(f"SELECT id FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.PENDING}'", (user_id,))).fetchone()
+        pending = await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status=?", (user_id, AccessRequestStatus.PENDING))).fetchone()
         if pending:
             await self.db.commit()
             return UserStatus.PENDING, pending[0]
-        await self.db.execute(f"INSERT INTO access_requests(telegram_user_id,status,created_at) VALUES (?, '{AccessRequestStatus.PENDING}', ?)", (user_id, now))
+        await self.db.execute("INSERT INTO access_requests(telegram_user_id,status,created_at) VALUES (?,?,?)", (user_id, AccessRequestStatus.PENDING, now))
         request_id = (await (await self.db.execute("SELECT last_insert_rowid()")).fetchone())[0]
         await self.db.commit()
         return "requested", request_id
@@ -88,14 +88,14 @@ class UserRepository(BaseRepository):
         status = UserStatus.APPROVED if approve else UserStatus.DENIED
         await self.db.execute("BEGIN IMMEDIATE")
         try:
-            cursor = await self.db.execute(f"SELECT telegram_user_id FROM access_requests WHERE id=? AND status='{AccessRequestStatus.PENDING}'", (request_id,))
+            cursor = await self.db.execute("SELECT telegram_user_id FROM access_requests WHERE id=? AND status=?", (request_id, AccessRequestStatus.PENDING))
             row = await cursor.fetchone()
             await cursor.close()
             if not row:
                 await self.db.rollback()
                 return False, None
             user_id = row[0]
-            cursor = await self.db.execute(f"UPDATE access_requests SET status=?, decided_by=?, decided_at=? WHERE id=? AND status='{AccessRequestStatus.PENDING}'", (status, admin_id, now, request_id))
+            cursor = await self.db.execute("UPDATE access_requests SET status=?, decided_by=?, decided_at=? WHERE id=? AND status=?", (status, admin_id, now, request_id, AccessRequestStatus.PENDING))
             changed = cursor.rowcount == 1
             await cursor.close()
             if not changed:
@@ -117,12 +117,12 @@ class UserRepository(BaseRepository):
         return await (await self.db.execute(query, args)).fetchall()
 
     async def pending_request_for_user(self, user_id: int):
-        return await (await self.db.execute(f"SELECT id FROM access_requests WHERE telegram_user_id=? AND status='{AccessRequestStatus.PENDING}'", (user_id,))).fetchone()
+        return await (await self.db.execute("SELECT id FROM access_requests WHERE telegram_user_id=? AND status=?", (user_id, AccessRequestStatus.PENDING))).fetchone()
 
     async def pending_request_ids(self) -> dict[int, int]:
         """Pending access request id per user, in one query for the users page."""
         rows = await (await self.db.execute(
-            f"SELECT telegram_user_id, MIN(id) FROM access_requests WHERE status='{AccessRequestStatus.PENDING}' GROUP BY telegram_user_id"
+            "SELECT telegram_user_id, MIN(id) FROM access_requests WHERE status=? GROUP BY telegram_user_id", (AccessRequestStatus.PENDING,)
         )).fetchall()
         return {row[0]: row[1] for row in rows}
 

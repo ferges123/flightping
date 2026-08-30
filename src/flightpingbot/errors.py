@@ -26,8 +26,8 @@ class InvalidApiKeyFormat(ValueError):
 AEROAPI_KEY_REJECTED_MESSAGE = "AeroAPI authorization failed. Please replace your key with /aeroapi."
 
 
-def user_facing_error(exc: Exception, language: str = "en") -> str:
-    """Turn upstream/application exceptions into short Telegram-safe text."""
+def user_facing_error(exc: Exception | str, language: str = "en") -> str:
+    """Turn upstream/application errors into short Telegram-safe text."""
     pl = language == "pl"
     if isinstance(exc, RateLimited):
         return f"Poczekaj {exc.retry_after} sekund przed kolejnym sprawdzeniem." if pl else str(exc)
@@ -35,9 +35,10 @@ def user_facing_error(exc: Exception, language: str = "en") -> str:
         return "Najpierw skonfiguruj klucz AeroAPI przez /aeroapi." if pl else str(exc)
     if isinstance(exc, InvalidApiKeyFormat):
         return "Klucz AeroAPI zawiera nieprawidłowe znaki. Ustaw go ponownie przez /aeroapi." if pl else str(exc)
-    message = str(exc).lower()
+    raw_message = str(exc)
+    message = raw_message.lower()
     if message.startswith("aeroapi authorization failed"):
-        return "Autoryzacja AeroAPI nie powiodła się. Podmień klucz przez /aeroapi." if pl else str(exc)
+        return "Autoryzacja AeroAPI nie powiodła się. Podmień klucz przez /aeroapi." if pl else raw_message
     if isinstance(exc, AeroAPIError) or message.startswith("aeroapi returned http"):
         status_code = exc.status_code if isinstance(exc, AeroAPIError) else None
         if status_code is None:
@@ -61,5 +62,5 @@ def user_facing_error(exc: Exception, language: str = "en") -> str:
         known = {
             "The airport must be a three-letter IATA code.": "Lotnisko musi mieć trzyliterowy kod IATA.",
         }
-        return known.get(str(exc), "Nie udało się wykonać żądania. Spróbuj ponownie później.")
-    return str(exc) or "The request could not be completed. Please try again later."
+        return known.get(raw_message, "Nie udało się wykonać żądania. Spróbuj ponownie później.")
+    return raw_message or "The request could not be completed. Please try again later."

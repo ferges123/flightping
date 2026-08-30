@@ -31,3 +31,7 @@ def test_key_rejected_message_is_localized_for_monitor_notifications():
     wrapped = RuntimeError(AEROAPI_KEY_REJECTED_MESSAGE)
     assert user_facing_error(wrapped) == AEROAPI_KEY_REJECTED_MESSAGE
     assert user_facing_error(wrapped, "pl") == "Autoryzacja AeroAPI nie powiodła się. Podmień klucz przez /aeroapi."
+
+
+def test_user_facing_error_accepts_recorded_error_text():
+    assert user_facing_error("AeroAPI returned HTTP 500: outage") == "AeroAPI is temporarily unavailable. Please try again later."

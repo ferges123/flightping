@@ -53,6 +53,32 @@ async def test_check_has_per_user_cooldown(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aeroapi_test_is_recorded_and_respects_limits(tmp_path):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"usage": []})
+
+    db = await Database(tmp_path / "test-limit.sqlite3").connect()
+    client = httpx.AsyncClient(base_url="https://example.test", transport=httpx.MockTransport(handler))
+    try:
+        repo = Repository(db, Fernet.generate_key().decode())
+        await repo.sync_admins(frozenset({100}))
+        await repo.set_aeroapi_key(100, "personal-key")
+        service = FlightService(repo, AeroAPI(client=client), 60, 9, daily_limit=1, request_cooldown_seconds=0)
+        assert await service.test_aeroapi(100) == 200
+        assert await repo.api_request_count("1970-01-01T00:00:00+00:00", 100) == 1
+        with pytest.raises(RuntimeError, match="daily AeroAPI request limit"):
+            await service.test_aeroapi(100)
+        assert calls == 1
+    finally:
+        await client.aclose()
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_api_usage_counts_timezone_lookups_and_preserves_a_strict_limit(tmp_path):
     paths = []
 

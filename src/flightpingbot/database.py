@@ -9,6 +9,31 @@ import aiosqlite
 from .migrations import migrate
 
 
+class _ReadCursor:
+    """Close SELECT cursors immediately after their result is consumed."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self._closed = False
+
+    async def fetchone(self):
+        try:
+            return await self._cursor.fetchone()
+        finally:
+            await self.close()
+
+    async def fetchall(self):
+        try:
+            return await self._cursor.fetchall()
+        finally:
+            await self.close()
+
+    async def close(self) -> None:
+        if not self._closed:
+            await self._cursor.close()
+            self._closed = True
+
+
 class Database:
     """Single shared SQLite connection.
 
@@ -74,7 +99,8 @@ class Database:
 
     async def execute(self, sql: str, parameters=None):
         conn = self._require_connection()
-        return await (conn.execute(sql, parameters) if parameters is not None else conn.execute(sql))
+        cursor = await (conn.execute(sql, parameters) if parameters is not None else conn.execute(sql))
+        return _ReadCursor(cursor) if sql.lstrip().upper().startswith("SELECT") else cursor
 
     async def executemany(self, sql: str, parameters) -> None:
         await self._require_connection().executemany(sql, parameters)

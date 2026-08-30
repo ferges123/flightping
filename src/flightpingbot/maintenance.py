@@ -13,18 +13,18 @@ from .statuses import MonitorJobStatus
 log = logging.getLogger(__name__)
 
 RETENTION_SQL = {
-    "alerts": "DELETE FROM alerts WHERE created_at < ?",
-    "flight_observations": "DELETE FROM flight_observations WHERE observed_at < ?",
-    "audit_events": "DELETE FROM audit_events WHERE created_at < ?",
-    "api_requests": "DELETE FROM api_requests WHERE created_at < ?",
-    "monitor_subscriptions": f"""DELETE FROM monitor_subscriptions WHERE job_id IN (
-        SELECT id FROM monitor_jobs WHERE status='{MonitorJobStatus.STOPPED}' AND stopped_at < ?
-    )""",
-    "monitor_jobs": f"DELETE FROM monitor_jobs WHERE status='{MonitorJobStatus.STOPPED}' AND stopped_at < ?",
-    "checks": """DELETE FROM checks WHERE finished_at < ?
+    "alerts": ("DELETE FROM alerts WHERE created_at < ?", ()),
+    "flight_observations": ("DELETE FROM flight_observations WHERE observed_at < ?", ()),
+    "audit_events": ("DELETE FROM audit_events WHERE created_at < ?", ()),
+    "api_requests": ("DELETE FROM api_requests WHERE created_at < ?", ()),
+    "monitor_subscriptions": ("""DELETE FROM monitor_subscriptions WHERE job_id IN (
+        SELECT id FROM monitor_jobs WHERE status=? AND stopped_at < ?
+    )""", (MonitorJobStatus.STOPPED,)),
+    "monitor_jobs": ("DELETE FROM monitor_jobs WHERE status=? AND stopped_at < ?", (MonitorJobStatus.STOPPED,)),
+    "checks": ("""DELETE FROM checks WHERE finished_at < ?
         AND NOT EXISTS (SELECT 1 FROM flight_observations WHERE check_id=checks.id)
         AND NOT EXISTS (SELECT 1 FROM api_requests WHERE check_id=checks.id)
-        AND NOT EXISTS (SELECT 1 FROM alerts WHERE check_id=checks.id)""",
+        AND NOT EXISTS (SELECT 1 FROM alerts WHERE check_id=checks.id)""", ()),
 }
 
 
@@ -111,5 +111,6 @@ class Maintenance:
             "checks": now - timedelta(days=self.check_days),
         }
         for table, cutoff in cutoffs.items():
-            await self.db.execute(RETENTION_SQL[table], (cutoff.isoformat(),))
+            sql, parameters = RETENTION_SQL[table]
+            await self.db.execute(sql, (*parameters, cutoff.isoformat()))
         await self.db.commit()

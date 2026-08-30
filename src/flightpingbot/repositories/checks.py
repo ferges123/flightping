@@ -10,13 +10,13 @@ class CheckRepository(BaseRepository):
     @serialized_write
     async def create_check(self, actor: int, airport: str, window_hours: int) -> int:
         now = utcnow()
-        cursor = await self.db.execute(f"INSERT INTO checks(actor_user_id,airport,window_hours,status,started_at) VALUES(?,?,?, '{CheckStatus.RUNNING}',?)", (actor, airport, window_hours, now))
+        cursor = await self.db.execute("INSERT INTO checks(actor_user_id,airport,window_hours,status,started_at) VALUES(?,?,?,?,?)", (actor, airport, window_hours, CheckStatus.RUNNING, now))
         await self.db.commit()
         return cursor.lastrowid
 
     @serialized_write
-    async def record_api_request(self, check_id: int, endpoint: str, status_code: int | None, latency_ms: int, retry_number: int = 0, error: str | None = None) -> None:
-        await self.db.execute("INSERT INTO api_requests(check_id,endpoint,status_code,latency_ms,retry_number,error,created_at) VALUES(?,?,?,?,?,?,?)", (check_id, endpoint, status_code, latency_ms, retry_number, error, utcnow()))
+    async def record_api_request(self, check_id: int | None, endpoint: str, status_code: int | None, latency_ms: int, retry_number: int = 0, error: str | None = None, *, actor_user_id: int | None = None) -> None:
+        await self.db.execute("INSERT INTO api_requests(check_id,actor_user_id,endpoint,status_code,latency_ms,retry_number,error,created_at) VALUES(?,?,?,?,?,?,?,?)", (check_id, actor_user_id, endpoint, status_code, latency_ms, retry_number, error, utcnow()))
         await self.db.commit()
 
     @serialized_write
@@ -56,8 +56,8 @@ class CheckRepository(BaseRepository):
 
     async def successful_checks(self, limit: int = 100):
         return await (await self.db.execute(
-            f"SELECT * FROM checks WHERE status='{CheckStatus.COMPLETED}' ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM checks WHERE status=? ORDER BY id DESC LIMIT ?",
+            (CheckStatus.COMPLETED, limit),
         )).fetchall()
 
     async def delayed_observations(self, limit: int = 100):
@@ -82,24 +82,24 @@ class CheckRepository(BaseRepository):
             FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"""
         args: list = [since]
         if actor_user_id is not None:
-            query += " AND c.actor_user_id=?"
+            query += " AND COALESCE(a.actor_user_id, c.actor_user_id)=?"
             args.append(actor_user_id)
         return await (await self.db.execute(query, args)).fetchone()
 
     async def usage_by_user(self, since: str):
-        return await (await self.db.execute("""SELECT c.actor_user_id AS user_id,
+        return await (await self.db.execute("""SELECT COALESCE(a.actor_user_id, c.actor_user_id) AS user_id,
             CASE WHEN NULLIF(u.username, '') IS NOT NULL THEN '@' || u.username
-                 ELSE COALESCE(NULLIF(u.display_name, ''), CAST(c.actor_user_id AS TEXT)) END AS user_name,
+                 ELSE COALESCE(NULLIF(u.display_name, ''), CAST(COALESCE(a.actor_user_id, c.actor_user_id) AS TEXT)) END AS user_name,
             COALESCE(SUM(1 + a.retry_number), 0) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
             SUM(a.status_code IS NULL OR a.status_code >= 400) AS errors, SUM(a.retry_number) AS retries
-            FROM api_requests a JOIN checks c ON c.id=a.check_id LEFT JOIN users u ON u.telegram_user_id=c.actor_user_id
-            WHERE a.created_at>=? GROUP BY c.actor_user_id ORDER BY total DESC""", (since,))).fetchall()
+            FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id LEFT JOIN users u ON u.telegram_user_id=COALESCE(a.actor_user_id, c.actor_user_id)
+            WHERE a.created_at>=? GROUP BY COALESCE(a.actor_user_id, c.actor_user_id) ORDER BY total DESC""", (since,))).fetchall()
 
     async def api_request_count(self, since: str, actor_user_id: int | None = None) -> int:
         query = "SELECT COALESCE(SUM(1 + a.retry_number), 0) FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"
         args: list = [since]
         if actor_user_id is not None:
-            query += " AND c.actor_user_id=?"
+            query += " AND COALESCE(a.actor_user_id, c.actor_user_id)=?"
             args.append(actor_user_id)
         row = await (await self.db.execute(query, args)).fetchone()
         return row[0]

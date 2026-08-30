@@ -174,6 +174,10 @@ MIGRATIONS = [
     CREATE INDEX user_favorite_airports_created_at
       ON user_favorite_airports(telegram_user_id, created_at);
     """,
+    """
+    ALTER TABLE api_requests ADD COLUMN actor_user_id INTEGER REFERENCES users(telegram_user_id);
+    CREATE INDEX api_requests_actor_created_at ON api_requests(actor_user_id, created_at);
+    """,
 ]
 
 

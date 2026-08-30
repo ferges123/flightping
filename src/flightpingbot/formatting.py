@@ -41,7 +41,7 @@ def format_check(result: CheckResult, timezone_name: str = "Atlantic/Canary", la
     pl = language == "pl"
     if result.error:
         title = "Nie udało się sprawdzić lotów" if pl else "Could not complete the flight check"
-        return f"❌ <b>{title}</b>\n\n{escape(user_facing_error(RuntimeError(result.error), language))}"
+        return f"❌ <b>{title}</b>\n\n{escape(user_facing_error(result.error, language))}"
     if not result.delayed:
         title = "nie znaleziono dużych opóźnień" if pl else "no major delays found"
         checked = "Sprawdzone planowane odloty" if pl else "Checked"
