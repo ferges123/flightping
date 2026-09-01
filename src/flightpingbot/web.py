@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -8,7 +12,9 @@ from zoneinfo import ZoneInfo
 
 from aiogram.enums import ParseMode
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Route
 
 from .formatting import flightaware_url, format_check, local_time as _time
@@ -47,6 +53,35 @@ form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
 """
 
 MAX_PAGE = 100_000
+
+
+class AdminTokenMiddleware(BaseHTTPMiddleware):
+    """Require a configured static token before serving the admin panel."""
+
+    def __init__(self, app, token: str):
+        super().__init__(app)
+        self.token = token
+
+    def _authorized(self, authorization: str) -> bool:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            return hmac.compare_digest(value, self.token)
+        if scheme.lower() != "basic":
+            return False
+        try:
+            _, password = base64.b64decode(value, validate=True).decode("utf-8").split(":", 1)
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return False
+        return hmac.compare_digest(password, self.token)
+
+    async def dispatch(self, request, call_next):
+        if self._authorized(request.headers.get("authorization", "")):
+            return await call_next(request)
+        return PlainTextResponse(
+            "Admin authentication required.",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="FlightPing Admin", charset="UTF-8"'},
+        )
 
 
 def _e(value) -> str:
@@ -102,12 +137,12 @@ def _alerts_table(alerts, timezone_name: str) -> str:
     return _table(["Airport", "Flight", "Delay", "Status", "Time"], rows, "No alerts found.")
 
 
-def _job_row(row, default_duration_seconds: int | None, timezone_name: str) -> str:
+def _job_row(row, default_duration_seconds: int | None, timezone_name: str, csrf_input: str = "") -> str:
     is_active = row["status"] == MonitorJobStatus.ACTIVE
     action = (
-        f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'><button class='danger'>Stop</button></form>"
+        f"<form method='post' action='/actions/monitor/{row['actor_user_id']}/{_e(row['airport'])}/stop'>{csrf_input}<button class='danger'>Stop</button></form>"
         if is_active
-        else f"<form method='post' action='/actions/monitor/{row['id']}/remonitor'><button>Remonitor</button></form>"
+        else f"<form method='post' action='/actions/monitor/{row['id']}/remonitor'>{csrf_input}<button>Remonitor</button></form>"
     )
     duration_seconds = row["duration_hours"] * 3600 if row["duration_hours"] else default_duration_seconds
     planned_expiry = _add_duration(row["started_at"], duration_seconds) if is_active and duration_seconds else None
@@ -120,36 +155,36 @@ def _job_row(row, default_duration_seconds: int | None, timezone_name: str) -> s
     )
 
 
-def _jobs_table(rows, duration_seconds: int | None, timezone_name: str) -> str:
+def _jobs_table(rows, duration_seconds: int | None, timezone_name: str, csrf_input: str = "") -> str:
     return _table(
         ["Airport", "User", "Status", "Interval", "Started", "Ended", "Planned expiry", "Action"],
-        [_job_row(row, duration_seconds, timezone_name) for row in rows],
+        [_job_row(row, duration_seconds, timezone_name, csrf_input) for row in rows],
         "No monitoring jobs found.",
     )
 
 
-def _user_action(row, pending_request) -> str:
+def _user_action(row, pending_request, csrf_input: str = "") -> str:
     if row["status"] == UserStatus.PENDING:
         if not pending_request:
             return ""
         request_id = pending_request[0]
         return (
-            f"<form method='post' action='/actions/access/{request_id}/approve'><button>Approve</button></form> "
-            f"<form method='post' action='/actions/access/{request_id}/deny'><button class='danger'>Deny</button></form>"
+            f"<form method='post' action='/actions/access/{request_id}/approve'>{csrf_input}<button>Approve</button></form> "
+            f"<form method='post' action='/actions/access/{request_id}/deny'>{csrf_input}<button class='danger'>Deny</button></form>"
         )
     if not row["is_admin"] and row["status"] in {UserStatus.APPROVED, UserStatus.BLOCKED}:
         target = UserStatus.BLOCKED if row["status"] == UserStatus.APPROVED else UserStatus.APPROVED
         label = "Block" if target == UserStatus.BLOCKED else "Unblock"
         css_class = "danger" if target == UserStatus.BLOCKED else "secondary"
-        return f"<form method='post' action='/actions/user/{row['telegram_user_id']}/{target}'><button class='{css_class}'>{label}</button></form>"
+        return f"<form method='post' action='/actions/user/{row['telegram_user_id']}/{target}'>{csrf_input}<button class='{css_class}'>{label}</button></form>"
     return ""
 
 
-def _users_table(rows, pending_requests: dict[int, int], timezone_name: str) -> str:
+def _users_table(rows, pending_requests: dict[int, int], timezone_name: str, csrf_input: str = "") -> str:
     rendered = []
     for row in rows:
         request_id = pending_requests.get(row["telegram_user_id"]) if row["status"] == UserStatus.PENDING else None
-        action = _user_action(row, [request_id] if request_id else None)
+        action = _user_action(row, [request_id] if request_id else None, csrf_input)
         rendered.append(
             f"<tr><td>{_e(row['display_name'])}<br><span class='muted'>{row['telegram_user_id']}</span></td>"
             f"<td>{_e(row['status'])}</td><td>{_time(row['created_at'], timezone_name)}</td>"
@@ -193,13 +228,15 @@ def _pagination(base_path: str, page: int, has_next: bool) -> str:
 class WebPanel:
     """Small server-rendered admin panel sharing the bot's repository."""
 
-    def __init__(self, repo, monitor, bot, admin_ids: frozenset[int], timezone_name: str = "Atlantic/Canary", app_settings=None):
+    def __init__(self, repo, monitor, bot, admin_ids: frozenset[int], timezone_name: str = "Atlantic/Canary", app_settings=None, auth_token: str = ""):
         self.repo = repo
         self.monitor = monitor
         self.bot = bot
         self.admin_ids = admin_ids
         self.timezone_name = timezone_name
         self.app_settings = app_settings
+        self.auth_token = auth_token
+        self.csrf_token = hmac.new(auth_token.encode(), b"flightping-web-csrf", hashlib.sha256).hexdigest() if auth_token else ""
 
     def app(self) -> Starlette:
         routes = [
@@ -216,7 +253,17 @@ class WebPanel:
             Route("/actions/access/{request_id:int}/{decision}", self.access_decision, methods=["POST"]),
             Route("/actions/user/{user_id:int}/{status}", self.user_status, methods=["POST"]),
         ]
-        return Starlette(routes=routes)
+        middleware = [Middleware(AdminTokenMiddleware, token=self.auth_token)] if self.auth_token else []
+        return Starlette(routes=routes, middleware=middleware)
+
+    def csrf_input(self) -> str:
+        return f"<input type='hidden' name='csrf_token' value='{self.csrf_token}'>" if self.auth_token else ""
+
+    async def valid_csrf(self, request) -> bool:
+        if not self.auth_token:
+            return True
+        form = parse_qs((await request.body()).decode(), keep_blank_values=True)
+        return hmac.compare_digest(form.get("csrf_token", [""])[0], self.csrf_token)
 
     async def logo(self, request):
         logo_path = Path(__file__).resolve().parents[2] / "logo.jpeg"
@@ -269,13 +316,14 @@ class WebPanel:
             options += f"<option value='{user['telegram_user_id']}'>{_e(label)} ({user['telegram_user_id']})</option>"
         body += (
             "<form class='monitor-form' method='post' action='/actions/monitor/start'>"
+            f"{self.csrf_input()}"
             "<h2 class='monitor-form__heading'>Add monitoring</h2>"
             f"<label>User<select name='user_id' required>{options}</select></label>"
             "<label>Airport (IATA)<input name='airport' type='text' minlength='3' maxlength='3' pattern='[A-Za-z]{3}' placeholder='WAW' required></label>"
             "<button type='submit'>Add monitoring</button></form>"
         )
         duration_seconds = self.monitor.duration if self.monitor else None
-        body += _jobs_table(rows, duration_seconds, self.timezone_name)
+        body += _jobs_table(rows, duration_seconds, self.timezone_name, self.csrf_input())
         if page > 1 or has_next:
             body += _pagination("/monitoring", page, has_next)
         return self.page("Monitoring", body, str(request.url.path) + (f"?page={page}" if page > 1 else ""))
@@ -283,7 +331,7 @@ class WebPanel:
     async def users(self, request):
         rows = await self.repo.list_users()
         pending_requests = await self.repo.pending_request_ids()
-        body = f"<h1>Users</h1>{_users_table(rows, pending_requests, self.timezone_name)}"
+        body = f"<h1>Users</h1>{_users_table(rows, pending_requests, self.timezone_name, self.csrf_input())}"
         return self.page("Users", body, request.url.path)
 
     async def history(self, request):
@@ -396,6 +444,8 @@ class WebPanel:
         return self.page("Settings", body, request.url.path)
 
     async def stop_monitor(self, request):
+        if not await self.valid_csrf(request):
+            return PlainTextResponse("Invalid CSRF token.", status_code=403)
         user_id = int(request.path_params["user_id"])
         airport = request.path_params["airport"]
         if await self.monitor.stop_user_airport(user_id, airport):
@@ -404,6 +454,8 @@ class WebPanel:
 
     async def start_monitor(self, request):
         form = parse_qs((await request.body()).decode(), keep_blank_values=True)
+        if self.auth_token and not hmac.compare_digest(form.get("csrf_token", [""])[0], self.csrf_token):
+            return PlainTextResponse("Invalid CSRF token.", status_code=403)
         try:
             user_id = int(form.get("user_id", [""])[0])
             airport = form.get("airport", [""])[0]
@@ -427,6 +479,8 @@ class WebPanel:
         return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
 
     async def remonitor(self, request):
+        if not await self.valid_csrf(request):
+            return PlainTextResponse("Invalid CSRF token.", status_code=403)
         job_id = int(request.path_params["job_id"])
         try:
             previous = await self.repo.monitor_job(job_id)
@@ -455,6 +509,8 @@ class WebPanel:
         return RedirectResponse(f"/monitoring?{urlencode({'notice': notice})}", status_code=303)
 
     async def access_decision(self, request):
+        if not await self.valid_csrf(request):
+            return PlainTextResponse("Invalid CSRF token.", status_code=403)
         request_id = int(request.path_params["request_id"])
         decision = request.path_params["decision"]
         if decision not in {"approve", "deny"}:
@@ -469,6 +525,8 @@ class WebPanel:
         return RedirectResponse("/users", status_code=303)
 
     async def user_status(self, request):
+        if not await self.valid_csrf(request):
+            return PlainTextResponse("Invalid CSRF token.", status_code=403)
         user_id = int(request.path_params["user_id"])
         status = request.path_params["status"]
         if status in {UserStatus.APPROVED, UserStatus.REVOKED, UserStatus.BLOCKED} and await self.repo.set_user_status(user_id, status):

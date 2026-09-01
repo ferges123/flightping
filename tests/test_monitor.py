@@ -165,6 +165,41 @@ async def test_check_finalizes_as_cancelled_when_task_is_cancelled():
 
 
 @pytest.mark.asyncio
+async def test_check_finalizes_as_error_when_an_unexpected_exception_occurs():
+    finished = []
+
+    class RepoStub:
+        async def api_request_count(self, since, user_id):
+            return 0
+
+        async def aeroapi_key(self, user_id):
+            return "secret"
+
+        async def create_check(self, actor, airport, window_hours):
+            return 1
+
+        async def finish_check(self, check_id, **kwargs):
+            finished.append((check_id, kwargs))
+
+    class BrokenAero:
+        async def scheduled_departures(self, airport, window_hours, api_key, *, max_attempts=4):
+            raise ValueError("invalid AeroAPI payload")
+
+    service = FlightService(RepoStub(), BrokenAero(), min_delay_minutes=60, window_hours=9)
+
+    with pytest.raises(ValueError, match="invalid AeroAPI payload"):
+        await service.check(200, "TFS")
+
+    assert finished == [(1, {
+        "status": CheckStatus.ERROR,
+        "request_count": 0,
+        "flight_count": 0,
+        "delayed_count": 0,
+        "error": "invalid AeroAPI payload",
+    })]
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_an_in_flight_cycle_immediately():
     repo = FakeRepo()
 

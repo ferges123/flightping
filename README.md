@@ -33,6 +33,12 @@ To change the bind address or port, set `FPB_WEB_HOST` and `FPB_WEB_PORT` in
 the environment file. For remote access, keep the application bound to
 loopback and publish it through the Caddy reverse proxy.
 
+Set `FPB_WEB_AUTH_TOKEN` to protect the panel with a token. A browser prompts
+for HTTP Basic credentials (the username is ignored; use the token as the
+password); API clients can send `Authorization: Bearer <token>`. When omitted,
+the panel remains available only according to its network binding, preserving
+the previous local-only behavior.
+
 The panel includes the dashboard, monitoring, users, history, delayed flights,
 and a read-only **Settings** page. The dashboard and Settings page show total
 API usage for today and the current month; Settings also includes the current
@@ -102,6 +108,7 @@ The example configuration is available in [.env.example](/opt/flightping/.env.ex
 | `FPB_MONTHLY_API_REQUEST_LIMIT` | Monthly request limit; `0` disables the limit. |
 | `FPB_USAGE_WARNING_PERCENT` | Usage percentage at which a warning is shown. |
 | `FPB_USER_REQUEST_COOLDOWN_SECONDS` | Minimum interval between manual user checks. |
+| `FPB_WEB_AUTH_TOKEN` | Optional token protecting the web panel through HTTP Basic or Bearer authentication. |
 | `FPB_TELEGRAM_MESSAGES_PER_MINUTE` | Maximum inbound messages per user per minute; defaults to `30`. Administrators are exempt. |
 | `FPB_FSM_STATE_TTL_SECONDS` | Inactivity timeout for interactive input states; defaults to `900` seconds. |
 | `FPB_*_RETENTION_DAYS` | Retention periods for observations, checks, alerts, audit events, API request logs, and stopped monitor jobs. Flight observations are retained for 7 days; checks for 90 days; alerts and audit events for 180 days; stopped jobs for 30 days by default. |

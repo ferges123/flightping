@@ -266,6 +266,96 @@ async def test_aeroapi_remove_explains_when_no_key_exists(tmp_path):
     assert message.answers == ["ℹ️ No AeroAPI key was configured."]
 
 
+@pytest.mark.asyncio
+async def test_aeroapi_remove_stops_monitoring_and_records_audit(tmp_path):
+    class Repo(FakeRepo):
+        async def remove_aeroapi_key(self, user_id):
+            return True
+
+    repo = Repo(status="approved")
+    service = FakeService()
+    service.repo = repo
+    monitor = FakeMonitor()
+    current_auth = Auth(Settings("bot", frozenset({100}), Path(tmp_path)), repo)
+    router = make_monitoring_router(current_auth, service, monitor)
+    handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "aeroapi_command")
+
+    message = FakeMessage(100, "/aeroapi remove")
+    await handler(message, None)
+
+    assert monitor.stopped_users == [100]
+    assert repo.audit_calls[-1][:2] == (100, "aeroapi_key_removed")
+    assert message.answers == ["✅ Your AeroAPI key was removed and monitoring was stopped."]
+
+
+@pytest.mark.asyncio
+async def test_aeroapi_set_starts_input_state_only_for_approved_user(tmp_path):
+    router = make_monitoring_router(auth(tmp_path), FakeService(), FakeMonitor())
+    handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "aeroapi_command")
+
+    class State:
+        value = None
+
+        async def set_state(self, value):
+            self.value = value
+
+    state = State()
+    message = FakeMessage(200, "/aeroapi set")
+    await handler(message, state)
+
+    assert state.value is None
+    assert message.answers == ["🔒 You don't have access yet. Send /start to request access."]
+
+    approved_auth = Auth(Settings("bot", frozenset({100, 200}), Path(tmp_path)), FakeRepo())
+    router = make_monitoring_router(approved_auth, FakeService(), FakeMonitor())
+    handler = next(item.callback for item in router.message.handlers if item.callback.__name__ == "aeroapi_command")
+    await handler(message, state)
+
+    assert "InputState:aeroapi_key" in str(state.value)
+
+
+@pytest.mark.asyncio
+async def test_admin_callback_approval_records_audit_and_notifies_user(tmp_path):
+    class Repo(FakeRepo):
+        async def decide_request(self, request_id, admin_id, approve):
+            assert (request_id, admin_id, approve) == (1, 100, True)
+            return True, 200
+
+        async def user_settings(self, user_id):
+            return None
+
+    class Bot:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, *args, **kwargs):
+            self.sent.append((args, kwargs))
+
+    class Callback(FakeMessage):
+        data = "access:approve:1"
+
+        def __init__(self):
+            super().__init__(100)
+            self.message = SimpleNamespace(edit_reply_markup=self.edit_reply_markup)
+            self.edited = False
+
+        async def edit_reply_markup(self, **kwargs):
+            self.edited = True
+
+    repo = Repo()
+    bot = Bot()
+    router = make_admin_router(Auth(Settings("bot", frozenset({100}), Path(tmp_path)), repo), repo, bot, FakeMonitor())
+    handler = next(item.callback for item in router.callback_query.handlers if item.callback.__name__ == "decide")
+    callback = Callback()
+
+    await handler(callback)
+
+    assert callback.answers == ["Saved."]
+    assert callback.edited is True
+    assert repo.audit_calls[-1][:2] == (100, "access_decision")
+    assert bot.sent[0][0][0] == 200
+
+
 def test_format_check_tolerates_invalid_upstream_time_data():
     result = CheckResult(1, "WAW", [], [{
         "flight_id": "W61234",

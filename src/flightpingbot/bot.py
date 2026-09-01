@@ -63,7 +63,7 @@ async def run(settings: Settings) -> None:
 
     await monitor.restore_active(restored_notification)
     web_task = asyncio.create_task(
-        serve_web(WebPanel(repo, monitor, bot, settings.admin_user_ids, settings.timezone_name, app_settings=settings), settings.web_host, settings.web_port),
+        serve_web(WebPanel(repo, monitor, bot, settings.admin_user_ids, settings.timezone_name, app_settings=settings, auth_token=settings.web_auth_token), settings.web_host, settings.web_port),
         name="flightping-web",
     )
     def bot_commands(language: str, is_admin: bool = False) -> list[BotCommand]:

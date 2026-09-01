@@ -65,13 +65,13 @@ class FlightService:
             raise MissingApiKeyError()
         await self._enforce_request_cooldown(actor_user_id)
         check_id = await self.repo.create_check(actor_user_id, airport, window_hours)
+        request_count = 0
         try:
             limits_remaining = [
                 self.daily_limit - daily_used if self.daily_limit else None,
                 self.monthly_limit - monthly_used if self.monthly_limit else None,
             ]
             remaining_attempts = min(limit for limit in limits_remaining if limit is not None) if any(limit is not None for limit in limits_remaining) else None
-            request_count = 0
             if airport not in self._airport_timezones:
                 timezone_lookup = getattr(self.aeroapi, "airport_timezone", None)
                 # The timezone lookup improves presentation only. Reserve the last
@@ -109,6 +109,19 @@ class FlightService:
         except asyncio.CancelledError:
             # A cancelled stop must not leave the check stuck in "running".
             await self.repo.finish_check(check_id, status=CheckStatus.CANCELLED, request_count=0, flight_count=0, delayed_count=0, error="cancelled")
+            raise
+        except Exception as exc:
+            # A malformed upstream response or a persistence failure after the
+            # check is created must not leave an uncollectable "running" row.
+            error = str(exc)[:500] or type(exc).__name__
+            await self.repo.finish_check(
+                check_id,
+                status=CheckStatus.ERROR,
+                request_count=request_count,
+                flight_count=0,
+                delayed_count=0,
+                error=error,
+            )
             raise
 
     async def test_aeroapi(self, actor_user_id: int) -> int:

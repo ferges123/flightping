@@ -81,6 +81,41 @@ async def test_start_monitor_reports_per_user_limit_instead_of_erroring(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_web_panel_optionally_requires_token_and_csrf_for_actions(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}), auth_token="panel-token")
+    headers = {"Authorization": "Bearer panel-token"}
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=panel.app()),
+            base_url="http://panel",
+            follow_redirects=True,
+        ) as client:
+            assert (await client.get("/")).status_code == 401
+
+            page = await client.get("/monitoring", headers=headers)
+            assert page.status_code == 200
+            assert panel.csrf_token in page.text
+
+            missing_csrf = await client.post(
+                "/actions/monitor/start",
+                data={"user_id": "999", "airport": "TFS"},
+                headers=headers,
+            )
+            assert missing_csrf.status_code == 403
+
+            accepted = await client.post(
+                "/actions/monitor/start",
+                data={"user_id": "999", "airport": "TFS", "csrf_token": panel.csrf_token},
+                headers=headers,
+            )
+            assert accepted.status_code == 200
+            assert "Choose an approved user." in accepted.text
+    finally:
+        await repo.db.close()
+
+
+@pytest.mark.asyncio
 async def test_dashboard_shows_monthly_api_request_counter(tmp_path):
     repo = await _make_repo(tmp_path)
     panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))

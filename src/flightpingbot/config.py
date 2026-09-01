@@ -51,6 +51,7 @@ class Settings:
     # reverse proxy when remote access is required.
     web_host: str = "127.0.0.1"
     web_port: int = 8080
+    web_auth_token: str = ""
 
     @property
     def database_path(self) -> Path:
@@ -75,6 +76,9 @@ class Settings:
         credentials_key = os.getenv("FPB_CREDENTIALS_KEY", "").strip()
         if not credentials_key or credentials_key == "replace_me":
             raise ConfigError("FPB_CREDENTIALS_KEY is required")
+        web_auth_token = os.getenv("FPB_WEB_AUTH_TOKEN", "").strip()
+        if web_auth_token == "replace_me":
+            web_auth_token = ""
         state_dir = Path(os.getenv("FPB_STATE_DIR", "/opt/flightping/state"))
         warning = _int("FPB_USAGE_WARNING_PERCENT", 80)
         if warning > 100:
@@ -107,4 +111,5 @@ class Settings:
             _int("FPB_FSM_STATE_TTL_SECONDS", 900, minimum=60),
             os.getenv("FPB_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
             _int("FPB_WEB_PORT", 8080, minimum=1),
+            web_auth_token,
         )
