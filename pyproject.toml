@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "pytest-asyncio>=0.23"]
+test = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=6,<8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -29,3 +29,4 @@ version = {attr = "flightpingbot.__version__"}
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+addopts = "--cov=flightpingbot --cov-report=term-missing --cov-fail-under=65"

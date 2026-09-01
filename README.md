@@ -71,6 +71,17 @@ Run the test suite:
 .venv/bin/pytest -q
 ```
 
+The test command reports coverage and fails when total coverage falls below
+65%. Raise this baseline as new paths receive tests.
+
+## Production service user
+
+The documented deployment is a systemd **user service**, so it runs as the
+current user automatically. Do not set `User=` or `Group=` in this unit: those
+directives are for system services and cannot express the installing user.
+Keep `state/` and `config/flightpingbot.env` readable and writable only by the
+user who runs `systemctl --user`.
+
 ## Configuration
 
 The example configuration is available in [.env.example](/opt/flightping/.env.example).

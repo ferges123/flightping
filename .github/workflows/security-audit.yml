@@ -27,5 +27,5 @@ jobs:
           python -m pip install 'pip-audit>=2.10,<3'
       - name: Audit dependencies
         run: python -m pip_audit --skip-editable
-      - name: Run tests
+      - name: Run tests with coverage
         run: python -m pytest -q

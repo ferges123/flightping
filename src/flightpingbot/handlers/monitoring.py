@@ -14,6 +14,7 @@ from ..formatting import format_check
 from ..monitor import FlightService, MonitorManager
 from ..keyboards import main_keyboard
 from ..i18n import button_texts, t, telegram_commands
+from ..preference_options import OPTIONS_BY_KIND
 import logging
 
 
@@ -50,7 +51,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         ])
 
     def value_keyboard(kind: str, language: str) -> InlineKeyboardMarkup:
-        values = {"window": (3, 6, 9, 12), "interval": (15, 30, 45, 60), "delay": (30, 45, 60, 90, 120), "duration": (3, 6, 12, 24)}[kind]
+        values = OPTIONS_BY_KIND[kind]
         suffix = " h" if kind in {"window", "duration"} else " min"
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{value}{suffix}", callback_data=f"setting:{kind}:{value}") for value in values],

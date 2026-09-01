@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from ..statuses import AccessRequestStatus, UserStatus
+from ..preference_options import DURATION_HOURS, INTERVAL_MINUTES, LANGUAGES, MIN_DELAY_MINUTES, WINDOW_HOURS
 from .base import BaseRepository, serialized_write, utcnow
 
 
@@ -32,15 +33,15 @@ class UserRepository(BaseRepository):
     async def update_user_settings(self, user_id: int, *, language: str | None = None, window_hours: int | None = None,
                                    interval_minutes: int | None = None, min_delay_minutes: int | None = None,
                                    duration_hours: int | None = None, reset: bool = False) -> None:
-        if language is not None and language not in {"en", "pl"}:
+        if language is not None and language not in LANGUAGES:
             raise ValueError("Unsupported language")
-        if window_hours is not None and window_hours not in {3, 6, 9, 12}:
+        if window_hours is not None and window_hours not in WINDOW_HOURS:
             raise ValueError("Unsupported check window")
-        if interval_minutes is not None and interval_minutes not in {15, 30, 45, 60}:
+        if interval_minutes is not None and interval_minutes not in INTERVAL_MINUTES:
             raise ValueError("Unsupported monitor interval")
-        if min_delay_minutes is not None and min_delay_minutes not in {30, 45, 60, 90, 120}:
+        if min_delay_minutes is not None and min_delay_minutes not in MIN_DELAY_MINUTES:
             raise ValueError("Unsupported delay threshold")
-        if duration_hours is not None and duration_hours not in {3, 6, 12, 24}:
+        if duration_hours is not None and duration_hours not in DURATION_HOURS:
             raise ValueError("Unsupported monitoring duration")
         if reset:
             await self.db.execute("DELETE FROM user_settings WHERE telegram_user_id=?", (user_id,))
