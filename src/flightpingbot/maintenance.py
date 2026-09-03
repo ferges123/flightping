@@ -21,7 +21,7 @@ RETENTION_SQL = {
         SELECT id FROM monitor_jobs WHERE status=? AND stopped_at < ?
     )""", (MonitorJobStatus.STOPPED,)),
     "monitor_jobs": ("DELETE FROM monitor_jobs WHERE status=? AND stopped_at < ?", (MonitorJobStatus.STOPPED,)),
-    "checks": ("""DELETE FROM checks WHERE finished_at < ?
+    "checks": ("""DELETE FROM checks WHERE COALESCE(finished_at, started_at) < ?
         AND NOT EXISTS (SELECT 1 FROM flight_observations WHERE check_id=checks.id)
         AND NOT EXISTS (SELECT 1 FROM api_requests WHERE check_id=checks.id)
         AND NOT EXISTS (SELECT 1 FROM alerts WHERE check_id=checks.id)""", ()),

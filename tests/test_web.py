@@ -17,10 +17,10 @@ class StubMonitor:
         self.stopped_airports = []
         self.stopped_users = []
 
-    async def start(self, actor_user_id, chat_id, airport, notify):
+    async def start(self, actor_user_id, chat_id, airport, notify, **preferences):
         if isinstance(self.start_result, Exception):
             raise self.start_result
-        self.started.append((actor_user_id, airport))
+        self.started.append((actor_user_id, airport, preferences))
         return self.start_result
 
     async def stop_user_airport(self, user_id, airport, chat_id=None):
@@ -50,6 +50,7 @@ def _client(panel: WebPanel) -> httpx.AsyncClient:
         transport=httpx.ASGITransport(app=panel.app()),
         base_url="http://panel",
         follow_redirects=True,
+        headers={"X-CSRF-Token": panel.csrf_token},
     )
 
 
@@ -133,6 +134,37 @@ async def test_dashboard_shows_monthly_api_request_counter(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_successes_page_shows_voucher_opportunity_link(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
+    try:
+        async with _client(panel) as client:
+            response = await client.get("/successes")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "Delayed flights found&nbsp;<a class='voucher-icon'" in body
+    assert ">🎟️</a>" in body
+    assert "https://fdp.mastercard.com/pekao" in body
+
+
+@pytest.mark.asyncio
+async def test_web_footer_shows_application_version_and_github_link(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
+    try:
+        async with _client(panel) as client:
+            response = await client.get("/")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "FlightPingBot · v0.0.1" in body
+    assert "https://github.com/ferges123/flightping" in body
+
+
+@pytest.mark.asyncio
 async def test_settings_page_shows_safe_read_only_application_configuration(tmp_path):
     repo = await _make_repo(tmp_path)
     settings = SimpleNamespace(
@@ -207,7 +239,7 @@ async def test_start_monitor_adds_monitoring_for_approved_user(tmp_path):
         await repo.db.close()
 
     assert "Monitoring for TFS was added." in body
-    assert monitor.started == [(200, "TFS")]
+    assert monitor.started == [(200, "TFS", {})]
 
 
 @pytest.mark.asyncio
@@ -287,7 +319,7 @@ async def test_remonitor_action_restarts_a_stopped_job(tmp_path):
         await repo.db.close()
 
     assert "Monitoring for TFS was restarted." in good_body
-    assert monitor.started == [(200, "TFS")]
+    assert monitor.started == [(200, "TFS", {"window_hours": 9, "interval_minutes": 30})]
     assert "no longer available to restart" in bad_body
 
 
@@ -299,8 +331,8 @@ async def test_panel_monitor_notifications_follow_the_user_language(tmp_path):
     await repo.update_user_settings(200, language="pl")
 
     class NotifyingStub(StubMonitor):
-        async def start(self, actor_user_id, chat_id, airport, notify):
-            self.started.append((actor_user_id, airport))
+        async def start(self, actor_user_id, chat_id, airport, notify, **preferences):
+            self.started.append((actor_user_id, airport, preferences))
             await notify(CheckResult(check_id=1, airport=airport, flights=[], delayed=[]))
             return "started"
 

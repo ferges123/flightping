@@ -35,3 +35,8 @@ def test_key_rejected_message_is_localized_for_monitor_notifications():
 
 def test_user_facing_error_accepts_recorded_error_text():
     assert user_facing_error("AeroAPI returned HTTP 500: outage") == "AeroAPI is temporarily unavailable. Please try again later."
+
+
+def test_user_facing_error_localizes_recorded_network_errors():
+    assert user_facing_error("Read timed out", "pl") == "Usługa lotów przekroczyła limit czasu. Spróbuj ponownie później."
+    assert user_facing_error("[Errno 111] Connection refused") == "The flight service is temporarily unreachable. Please try again later."

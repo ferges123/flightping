@@ -19,7 +19,7 @@ from .handlers.monitoring import make_router as make_monitoring_router
 from .monitor import FlightService, MonitorManager
 from .maintenance import Maintenance
 from .repositories import Repository
-from .keyboards import main_keyboard
+from .keyboards import delay_report_keyboard, main_keyboard
 from .formatting import format_check
 from .security import InboundSecurityMiddleware
 
@@ -58,7 +58,7 @@ async def run(settings: Settings) -> None:
         async def notify(result):
             saved = await repo.user_settings(user_id)
             language = saved["language"] if saved else "en"
-            await bot.send_message(chat_id, format_check(result, settings.timezone_name, language), parse_mode=ParseMode.HTML)
+            await bot.send_message(chat_id, format_check(result, settings.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
         return notify
 
     await monitor.restore_active(restored_notification)

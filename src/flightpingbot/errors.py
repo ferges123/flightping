@@ -58,6 +58,12 @@ def user_facing_error(exc: Exception | str, language: str = "en") -> str:
         return "Usługa lotów przekroczyła limit czasu. Spróbuj ponownie później." if pl else "The flight service timed out. Please try again later."
     if isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError)):
         return "Usługa lotów jest chwilowo nieosiągalna. Spróbuj ponownie później." if pl else "The flight service is temporarily unreachable. Please try again later."
+    # AeroAPI request accounting stores errors as text, so the original httpx
+    # exception type is not available when the result is rendered later.
+    if "timed out" in message or "timeout" in message:
+        return "Usługa lotów przekroczyła limit czasu. Spróbuj ponownie później." if pl else "The flight service timed out. Please try again later."
+    if any(marker in message for marker in ("network", "connection refused", "connect error", "name or service not known", "remote protocol")):
+        return "Usługa lotów jest chwilowo nieosiągalna. Spróbuj ponownie później." if pl else "The flight service is temporarily unreachable. Please try again later."
     if pl:
         known = {
             "The airport must be a three-letter IATA code.": "Lotnisko musi mieć trzyliterowy kod IATA.",

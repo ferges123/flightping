@@ -48,3 +48,18 @@ async def test_retention_removes_old_alerts_checks_and_stopped_jobs(tmp_path):
             assert row[0] == 0
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_retention_removes_old_interrupted_checks(tmp_path):
+    db = await Database(tmp_path / "source.sqlite3").connect()
+    try:
+        old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        await db.execute("INSERT INTO checks(actor_user_id, airport, window_hours, status, started_at) VALUES (100, 'WAW', 9, 'running', ?)", (old,))
+        await db.commit()
+        maintenance = Maintenance(db, 30, 30, 30, tmp_path / "backups", check_days=30)
+        await maintenance.run_once()
+        row = await (await db.execute("SELECT COUNT(*) FROM checks")).fetchone()
+        assert row[0] == 0
+    finally:
+        await db.close()

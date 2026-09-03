@@ -9,7 +9,6 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=/opt/flightping
 EnvironmentFile=/opt/flightping/config/flightpingbot.env
-Environment=FPB_STATE_DIR=/opt/flightping/state
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/flightping/.venv/bin/python -m flightpingbot
 Restart=on-failure
@@ -18,7 +17,7 @@ TimeoutStopSec=30
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
 PrivateDevices=true
 ProtectClock=true
@@ -35,7 +34,6 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/opt/flightping/state
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=flightpingbot

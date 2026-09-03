@@ -47,8 +47,8 @@ class FlightService:
 
     async def check(self, actor_user_id: int, airport: str, *, window_hours: int | None = None,
                     min_delay_minutes: int | None = None) -> CheckResult:
-        window_hours = window_hours or self.window_hours
-        min_delay_minutes = min_delay_minutes or self.min_delay_minutes
+        window_hours = self.window_hours if window_hours is None else window_hours
+        min_delay_minutes = self.min_delay_minutes if min_delay_minutes is None else min_delay_minutes
         airport = airport.strip()
         if len(airport) != 3 or not airport.isascii() or not airport.isalpha():
             raise ValueError("The airport must be a three-letter IATA code.")
@@ -181,10 +181,10 @@ class MonitorManager:
         if len(airport) != 3 or not airport.isascii() or not airport.isalpha():
             raise ValueError("The airport must be a three-letter IATA code.")
         airport = airport.upper()
-        window_hours = window_hours or self.service.window_hours
-        interval_minutes = interval_minutes or self.interval // 60
-        min_delay_minutes = min_delay_minutes or getattr(self.service, "min_delay_minutes", 60)
-        duration_seconds = duration_hours * 3600 if duration_hours else self.duration
+        window_hours = self.service.window_hours if window_hours is None else window_hours
+        interval_minutes = self.interval // 60 if interval_minutes is None else interval_minutes
+        min_delay_minutes = getattr(self.service, "min_delay_minutes", 60) if min_delay_minutes is None else min_delay_minutes
+        duration_seconds = duration_hours * 3600 if duration_hours is not None else self.duration
         job_id, new_subscription = await self.repo.create_monitor_job(actor_user_id, chat_id, airport, window_hours, interval_minutes, self.max_active_airports, min_delay_minutes, duration_hours)
         job_key = (actor_user_id, airport)
         if job_key in self.jobs:

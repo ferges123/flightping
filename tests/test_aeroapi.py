@@ -33,6 +33,14 @@ async def test_scheduled_departures_uses_api_datetime_format():
     assert seen["max_pages"] == "5"
 
 
+def test_normalize_accepts_mixed_timezone_datetimes():
+    flight = AeroAPI._normalize({
+        "scheduled_out": "2026-08-18T10:00:00Z",
+        "estimated_out": "2026-08-18T11:00:00",
+    })
+    assert flight["delay_minutes"] == 60
+
+
 @pytest.mark.asyncio
 async def test_retries_rate_limit_then_succeeds():
     calls = 0

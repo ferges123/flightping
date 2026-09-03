@@ -23,6 +23,9 @@ test = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=6,<8"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+flightpingbot = ["static/*.jpeg"]
+
 [tool.setuptools.dynamic]
 version = {attr = "flightpingbot.__version__"}
 

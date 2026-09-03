@@ -1,5 +1,6 @@
 from flightpingbot.i18n import MESSAGES, button_label, button_texts
-from flightpingbot.keyboards import ALL_BUTTON_KEYS, main_keyboard
+from flightpingbot.keyboards import ALL_BUTTON_KEYS, DELAY_REPORT_URL, delay_report_keyboard, main_keyboard
+
 
 # Frozen snapshot: any change to an English label breaks saved keyboards on
 # user devices, so it must be a conscious decision (update this list too).
@@ -59,3 +60,12 @@ def test_main_keyboard_appends_admin_rows_only_for_admins():
     user_rows = len(main_keyboard(False, "en").keyboard)
     admin_rows = len(main_keyboard(True, "en").keyboard)
     assert admin_rows == user_rows + 2
+
+
+def test_delay_report_keyboard_is_localized_and_only_shown_for_delays():
+    assert delay_report_keyboard("en", False) is None
+
+    polish_button = delay_report_keyboard("pl", True).inline_keyboard[0][0]
+    assert polish_button.text == "Zgłoś"
+    assert polish_button.url == DELAY_REPORT_URL
+    assert delay_report_keyboard("en", True).inline_keyboard[0][0].text == "Submit"

@@ -12,7 +12,7 @@ from ..auth import Auth
 from ..errors import user_facing_error
 from ..formatting import format_check
 from ..monitor import FlightService, MonitorManager
-from ..keyboards import main_keyboard
+from ..keyboards import delay_report_keyboard, main_keyboard
 from ..i18n import button_texts, t, telegram_commands
 from ..preference_options import OPTIONS_BY_KIND
 import logging
@@ -212,11 +212,11 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             if action == "check":
                 result = await service.check(user.id, airport, window_hours=values["window_hours"], min_delay_minutes=values["min_delay_minutes"])
                 await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": airport, "source": "favorite"})
-                await callback.message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
+                await callback.message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
             elif action == "monitor":
                 async def notify(result):
                     current_language, _ = await preferences(user.id)
-                    await callback.message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+                    await callback.message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(current_language, bool(result.delayed)))
                 monitor_state = await monitor.start(user.id, callback.message.chat.id, airport, notify, **values)
                 await service.repo.audit(user.id, "monitor_start", "monitor", airport, {"state": monitor_state, "source": "favorite"})
                 await callback.message.answer(t(language, "monitor_started" if monitor_state == "started" else "monitor_subscribed", airport=airport), parse_mode=ParseMode.HTML)
@@ -347,7 +347,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             return
         await state.clear()
         await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": result.airport})
-        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
+        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
 
     @router.message(F.text.in_(button_texts("btn_monitor")), F.chat.type == "private")
     async def monitor_button(message: Message, state: FSMContext):
@@ -372,7 +372,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         try:
             async def notify(result):
                 current_language, _ = await preferences(user.id)
-                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(current_language, bool(result.delayed)))
             monitor_state = await monitor.start(user.id, message.chat.id, airport, notify, **values)
         except (RuntimeError, ValueError) as exc:
             await message.answer(user_facing_error(exc, language) + t(language, "try_again"))
@@ -434,7 +434,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
             await message.answer(user_facing_error(exc, language))
             return
         await service.repo.audit(user.id, "check", "check", str(result.check_id), {"airport": result.airport})
-        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML)
+        await message.answer(format_check(result, auth.settings.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
 
     @router.message(Command("monitor"), F.chat.type == "private")
     async def start_monitor(message: Message):
@@ -450,7 +450,7 @@ def make_router(auth: Auth, service: FlightService, monitor: MonitorManager, bot
         try:
             async def notify(result):
                 current_language, _ = await preferences(user.id)
-                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML)
+                await message.answer(format_check(result, auth.settings.timezone_name, current_language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(current_language, bool(result.delayed)))
             monitor_state = await monitor.start(user.id, message.chat.id, parts[1], notify, **values)
         except (RuntimeError, ValueError) as exc:
             await message.answer(user_facing_error(exc, language))

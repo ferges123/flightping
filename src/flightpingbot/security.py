@@ -11,12 +11,21 @@ from aiogram.types import Message
 class InboundSecurityMiddleware(BaseMiddleware):
     """Apply a per-user inbound message limit and expire stale FSM states."""
 
+    MAX_TRACKED_USERS = 10_000
+
     def __init__(self, admins: frozenset[int], messages_per_minute: int, state_ttl_seconds: int):
         self.admins = admins
         self.messages_per_minute = messages_per_minute
         self.state_ttl_seconds = state_ttl_seconds
         self._message_times: dict[int, deque[float]] = defaultdict(deque)
         self._last_rate_notice: dict[int, float] = {}
+
+    def _forget_oldest_user(self) -> None:
+        if len(self._message_times) < self.MAX_TRACKED_USERS:
+            return
+        oldest_user_id = next(iter(self._message_times))
+        self._message_times.pop(oldest_user_id, None)
+        self._last_rate_notice.pop(oldest_user_id, None)
 
     async def __call__(
         self,
@@ -33,6 +42,8 @@ class InboundSecurityMiddleware(BaseMiddleware):
 
         # Keep the emergency cancellation path available even during throttling.
         if user_id not in self.admins and not is_cancel:
+            if user_id not in self._message_times:
+                self._forget_oldest_user()
             times = self._message_times[user_id]
             cutoff = now - 60.0
             while times and times[0] <= cutoff:

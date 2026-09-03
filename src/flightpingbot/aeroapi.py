@@ -106,8 +106,14 @@ class AeroAPI:
         if scheduled and estimated:
             try:
                 if delay is None:
-                    delay = max(0, int((datetime.fromisoformat(estimated.replace("Z", "+00:00")) - datetime.fromisoformat(scheduled.replace("Z", "+00:00"))).total_seconds() // 60))
-            except ValueError:
+                    estimated_at = datetime.fromisoformat(estimated.replace("Z", "+00:00"))
+                    scheduled_at = datetime.fromisoformat(scheduled.replace("Z", "+00:00"))
+                    if estimated_at.tzinfo is None:
+                        estimated_at = estimated_at.replace(tzinfo=timezone.utc)
+                    if scheduled_at.tzinfo is None:
+                        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                    delay = max(0, int((estimated_at - scheduled_at).total_seconds() // 60))
+            except (OverflowError, TypeError, ValueError):
                 pass
         origin = item.get("origin") if isinstance(item.get("origin"), dict) else {}
         destination = item.get("destination") if isinstance(item.get("destination"), dict) else {}

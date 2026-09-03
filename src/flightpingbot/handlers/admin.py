@@ -39,6 +39,29 @@ def _human_size(size_bytes: int) -> str:
     raise AssertionError("unreachable")
 
 
+async def _answer_chunks(message: Message, lines: list[str], *, heading: str = "") -> None:
+    """Send a potentially long, line-oriented report within Telegram limits."""
+    limit = 3800
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        # A Telegram field may be unexpectedly long; split it before adding
+        # it to a chunk rather than letting one row make the command fail.
+        pieces = [line[index:index + limit] for index in range(0, len(line), limit)] or [""]
+        for piece in pieces:
+            candidate = f"{current}\n{piece}" if current else piece
+            if current and len(candidate) > limit:
+                chunks.append(current)
+                current = piece
+            else:
+                current = candidate
+    if current:
+        chunks.append(current)
+    for index, chunk in enumerate(chunks, 1):
+        prefix = f"{heading} ({index}/{len(chunks)})\n" if heading and len(chunks) > 1 else (f"{heading}\n" if heading else "")
+        await message.answer(prefix + chunk)
+
+
 def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
     router = Router(name="admin")
 
@@ -107,14 +130,17 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
         if not rows:
             await message.answer("No users found.")
             return
-        await message.answer("\n".join(f"{row['telegram_user_id']} — {row['status']} — {row['display_name']}" for row in rows[:50]))
+        await _answer_chunks(message, [f"{row['telegram_user_id']} — {row['status']} — {row['display_name']}" for row in rows[:50]], heading="Users")
 
     @router.message(Command("requests"), F.chat.type == "private")
     async def requests(message: Message):
         if not admin(message):
             return
         rows = await repo.list_users(UserStatus.PENDING)
-        await message.answer("No pending requests." if not rows else "\n".join(f"{row['telegram_user_id']} — {row['display_name']}" for row in rows))
+        if not rows:
+            await message.answer("No pending requests.")
+            return
+        await _answer_chunks(message, [f"{row['telegram_user_id']} — {row['display_name']}" for row in rows], heading="Pending requests")
 
     async def decide_by_user(message: Message, approve: bool):
         if not admin(message):
@@ -187,7 +213,10 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             return
         parts = (message.text or "").split()
         rows = await repo.recent_checks(parts[1].upper() if len(parts) == 2 else None)
-        await message.answer("No checks found." if not rows else "\n".join(f"#{r['id']} {r['airport']} {r['status']} flights={r['flight_count']} delayed={r['delayed_count']}" for r in rows))
+        if not rows:
+            await message.answer("No checks found.")
+            return
+        await _answer_chunks(message, [f"#{r['id']} {r['airport']} {r['status']} flights={r['flight_count']} delayed={r['delayed_count']}" for r in rows], heading="Checks")
 
     @router.message(Command("checklog"), F.chat.type == "private")
     async def checklog(message: Message):
@@ -198,7 +227,10 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             await message.answer("Usage: /checklog <check_id>")
             return
         observations = await repo.check_observations(int(parts[1]))
-        await message.answer("No observations found." if not observations else "\n".join(f"{row['flight_id']} {row['origin'] or '?'}→{row['destination'] or '?'} delay={row['delay_minutes'] or 0} min" for row in observations[:50]))
+        if not observations:
+            await message.answer("No observations found.")
+            return
+        await _answer_chunks(message, [f"{row['flight_id']} {row['origin'] or '?'}→{row['destination'] or '?'} delay={row['delay_minutes'] or 0} min" for row in observations[:50]], heading="Observations")
 
     @router.message(F.text.in_(button_texts("btn_usage")), F.chat.type == "private")
     @router.message(Command("usage"), F.chat.type == "private")
@@ -223,7 +255,10 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             by_user = await repo.usage_by_user(since)
             lines = [f"Last 24 hours — total: requests={row['total'] or 0}, successes={row['success'] or 0}, errors={row['errors'] or 0}, retries={row['retries'] or 0}", "", "Per user:"]
             lines.extend(f"• {item['user_name']}: requests={item['total'] or 0}, successes={item['success'] or 0}, errors={item['errors'] or 0}, retries={item['retries'] or 0}" for item in by_user)
-            await message.answer("\n".join(lines) if by_user else lines[0] + "\n\nPer user: no data")
+            if by_user:
+                await _answer_chunks(message, lines, heading="API usage")
+            else:
+                await message.answer(lines[0] + "\n\nPer user: no data")
             return
         total = row["total"] or 0
         limit = auth.settings.daily_api_request_limit
@@ -262,7 +297,10 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
             return
         parts = (message.text or "").split()
         rows = await repo.list_alerts(parts[1].upper() if len(parts) == 2 else None)
-        await message.answer("No alerts found." if not rows else "\n".join(f"#{row['id']} {row['airport']} {row['flight_id']} {row['status']} +{row['delay_minutes']} min" for row in rows))
+        if not rows:
+            await message.answer("No alerts found.")
+            return
+        await _answer_chunks(message, [f"#{row['id']} {row['airport']} {row['flight_id']} {row['status']} +{row['delay_minutes']} min" for row in rows], heading="Alerts")
 
     @router.message(Command("audit"), F.chat.type == "private")
     async def audit(message: Message):

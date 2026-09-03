@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -17,18 +17,20 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Route
 
+from . import __version__
 from .formatting import flightaware_url, format_check, local_time as _time
+from .keyboards import DELAY_REPORT_URL, delay_report_keyboard
 from .statuses import MonitorJobStatus, UserStatus
 
 
 CSS = """
 :root { color-scheme: light; font-family: system-ui, sans-serif; scrollbar-gutter: stable; }
-body { margin: 0; overflow-y: scroll; background: #f4f6f8; color: #17212b; }
+body { min-height: 100vh; margin: 0; overflow-y: scroll; background: #f4f6f8; color: #17212b; display: flex; flex-direction: column; }
 header { background: #17212b; color: white; padding: .65rem max(1rem, calc((100% - 1100px)/2)); }
 .brand { display: inline-flex; align-items: center; gap: .55rem; margin-right: 1.25rem; }
 .brand img { width: 42px; height: 42px; object-fit: cover; border-radius: 50%; background: white; vertical-align: middle; }
 header a { color: white; text-decoration: none; margin-right: 1rem; }
-main { max-width: 1100px; margin: 1.25rem auto; padding: 0 1rem; }
+main { flex: 1; width: min(1100px, calc(100% - 2rem)); margin: 1.25rem auto; }
 .muted { color: #687582; font-size: .9rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .75rem; }
 .card, table { background: white; border: 1px solid #dce2e7; border-radius: 8px; }
@@ -47,6 +49,9 @@ form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
 .monitor-form input:focus, .monitor-form select:focus { outline: 2px solid rgb(23 105 170 / 25%); border-color: #1769aa; }
 .monitor-form button { height: 2.55rem; padding: .45rem 1rem; white-space: nowrap; }
 .notice { margin: .75rem 0; padding: .65rem .8rem; color: #155724; background: #edf8ef; border: 1px solid #c8e6cc; border-radius: 6px; }
+.voucher-icon { margin-left: .25rem; text-decoration: none; }
+footer { padding: 1rem; color: #687582; background: #fff; border-top: 1px solid #dce2e7; text-align: center; font-size: .85rem; }
+footer a { color: #1769aa; }
 .pagination { display: flex; gap: .5rem; justify-content: flex-end; margin: -.75rem 0 1.5rem; }
 .pagination a { padding: .4rem .65rem; border-radius: 5px; background: #1769aa; color: white; text-decoration: none; }
 @media (max-width: 650px) { header nav { display: flex; justify-content: space-between; align-items: center; } header a { margin-right: 0; } table { display: block; overflow-x: auto; white-space: nowrap; } .settings-page table { display: table; overflow: visible; white-space: normal; table-layout: fixed; } .settings-page th, .settings-page td { overflow-wrap: anywhere; } .settings-page .usage-table { display: block; border: 0; background: transparent; margin-bottom: 1.5rem; } .settings-page .usage-table thead { display: none; } .settings-page .usage-table tbody { display: grid; gap: .65rem; } .settings-page .usage-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #dce2e7; border-radius: 8px; overflow: hidden; background: white; } .settings-page .usage-table td { padding: .55rem .7rem; border-bottom: 1px solid #edf0f2; } .settings-page .usage-table td:first-child { grid-column: 1 / -1; font-weight: 700; background: #f8fafb; } .settings-page .usage-table td:nth-last-child(-n + 2) { border-bottom: 0; } .settings-page .usage-table td[data-label]::before { content: attr(data-label) ": "; color: #687582; font-size: .8rem; } .settings-page .usage-by-user-table { display: table; border: 1px solid #dce2e7; border-radius: 8px; background: white; overflow: hidden; } .settings-page .usage-by-user-table thead { display: table-header-group; } .settings-page .usage-by-user-table tbody { display: table-row-group; } .settings-page .usage-by-user-table tr { display: table-row; border: 0; background: transparent; } .settings-page .usage-by-user-table td { border-bottom: 1px solid #edf0f2; } .settings-page .usage-by-user-table td:first-child { background: transparent; } .settings-page .usage-by-user-table td:nth-child(2)::before { content: none; } .settings-page .usage-by-user-table th:nth-child(3), .settings-page .usage-by-user-table th:nth-child(4), .settings-page .usage-by-user-table th:nth-child(5), .settings-page .usage-by-user-table td:nth-child(3), .settings-page .usage-by-user-table td:nth-child(4), .settings-page .usage-by-user-table td:nth-child(5) { display: none; } .settings-page .usage-by-user-table .usage-details { display: table-cell; } .monitor-form { grid-template-columns: 1fr; } .monitor-form button { width: 100%; } }
@@ -236,7 +241,9 @@ class WebPanel:
         self.timezone_name = timezone_name
         self.app_settings = app_settings
         self.auth_token = auth_token
-        self.csrf_token = hmac.new(auth_token.encode(), b"flightping-web-csrf", hashlib.sha256).hexdigest() if auth_token else ""
+        # This is deliberately independent from optional HTTP authentication:
+        # localhost deployments still need to reject cross-site form posts.
+        self.csrf_token = secrets.token_urlsafe(32)
 
     def app(self) -> Starlette:
         routes = [
@@ -257,21 +264,20 @@ class WebPanel:
         return Starlette(routes=routes, middleware=middleware)
 
     def csrf_input(self) -> str:
-        return f"<input type='hidden' name='csrf_token' value='{self.csrf_token}'>" if self.auth_token else ""
+        return f"<input type='hidden' name='csrf_token' value='{self.csrf_token}'>"
 
     async def valid_csrf(self, request) -> bool:
-        if not self.auth_token:
-            return True
         form = parse_qs((await request.body()).decode(), keep_blank_values=True)
-        return hmac.compare_digest(form.get("csrf_token", [""])[0], self.csrf_token)
+        provided = request.headers.get("x-csrf-token") or form.get("csrf_token", [""])[0]
+        return hmac.compare_digest(provided, self.csrf_token)
 
     async def logo(self, request):
-        logo_path = Path(__file__).resolve().parents[2] / "logo.jpeg"
+        logo_path = Path(__file__).with_name("static") / "logo.jpeg"
         return FileResponse(logo_path, media_type="image/jpeg")
 
     def page(self, title: str, body: str, refresh_path: str = "/") -> HTMLResponse:
         now = datetime.now(timezone.utc).astimezone(ZoneInfo(self.timezone_name)).strftime("%Y-%m-%d %H:%M:%S %Z")
-        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Start</a><a href='/monitoring'>Monitor</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delays</a><a href='/settings' aria-label='Settings' title='Settings'>⚙</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main></body></html>"
+        html = f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{_e(title)} · FlightPing</title><style>{CSS}</style></head><body><header><span class='brand'><img src='/logo.jpeg?v=2' alt='FlightPing logo'><b>FlightPing</b></span><nav><a href='/'>Start</a><a href='/monitoring'>Monitor</a><a href='/users'>Users</a><a href='/history'>History</a><a href='/successes'>Delays</a><a href='/settings' aria-label='Settings' title='Settings'>⚙</a></nav></header><main><div class='muted'>Data as of: {now} · <a href='{_e(refresh_path)}' style='color:#1769aa'>Refresh</a></div>{body}</main><footer>FlightPingBot · v{_e(__version__)} · <a href='https://github.com/ferges123/flightping' target='_blank' rel='noopener noreferrer'>GitHub</a></footer></body></html>"
         return HTMLResponse(html)
 
     async def dashboard(self, request):
@@ -352,7 +358,7 @@ class WebPanel:
     async def successes(self, request):
         rows = await self.repo.delayed_observations(limit=100)
         body = (
-            "<h1>Delayed flights found</h1>"
+            f"<h1>Delayed flights found&nbsp;<a class='voucher-icon' href='{DELAY_REPORT_URL}' target='_blank' rel='noopener noreferrer' title='Check voucher eligibility' aria-label='Check voucher eligibility'>🎟️</a></h1>"
             "<p class='muted'>Latest observation for each delayed flight. Scheduled and estimated times use the origin airport's local time, with UTC in parentheses.</p>"
             f"{_delayed_table(rows, self.timezone_name)}"
         )
@@ -453,9 +459,9 @@ class WebPanel:
         return RedirectResponse("/monitoring", status_code=303)
 
     async def start_monitor(self, request):
-        form = parse_qs((await request.body()).decode(), keep_blank_values=True)
-        if self.auth_token and not hmac.compare_digest(form.get("csrf_token", [""])[0], self.csrf_token):
+        if not await self.valid_csrf(request):
             return PlainTextResponse("Invalid CSRF token.", status_code=403)
+        form = parse_qs((await request.body()).decode(), keep_blank_values=True)
         try:
             user_id = int(form.get("user_id", [""])[0])
             airport = form.get("airport", [""])[0]
@@ -466,9 +472,14 @@ class WebPanel:
             async def notify(result):
                 saved = await self.repo.user_settings(user_id)
                 language = saved["language"] if saved else "en"
-                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML)
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
 
-            status = await self.monitor.start(user_id, user["chat_id"], airport, notify)
+            saved = await self.repo.user_settings(user_id)
+            preferences = {
+                key: saved[key] for key in ("window_hours", "interval_minutes", "min_delay_minutes", "duration_hours")
+                if saved and saved[key] is not None
+            }
+            status = await self.monitor.start(user_id, user["chat_id"], airport, notify, **preferences)
             notice = {
                 "started": f"Monitoring for {airport.strip().upper()} was added.",
                 "subscribed": f"The user was subscribed to {airport.strip().upper()}.",
@@ -493,10 +504,14 @@ class WebPanel:
             async def notify(result):
                 saved = await self.repo.user_settings(user["telegram_user_id"])
                 language = saved["language"] if saved else "en"
-                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML)
+                await self.bot.send_message(user["chat_id"], format_check(result, self.timezone_name, language), parse_mode=ParseMode.HTML, reply_markup=delay_report_keyboard(language, bool(result.delayed)))
 
             airport = previous["airport"]
-            status = await self.monitor.start(user["telegram_user_id"], user["chat_id"], airport, notify)
+            preferences = {
+                key: previous[key] for key in ("window_hours", "interval_minutes", "min_delay_minutes", "duration_hours")
+                if previous[key] is not None
+            }
+            status = await self.monitor.start(user["telegram_user_id"], user["chat_id"], airport, notify, **preferences)
             if status == "started":
                 await self.repo.audit(None, "monitor_remonitor", "monitor", str(job_id), {"user_id": user["telegram_user_id"], "airport": airport, "source": "web"})
             notice = {
