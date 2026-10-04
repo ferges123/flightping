@@ -21,9 +21,9 @@ class CheckRepository(BaseRepository):
 
     @serialized_write
     async def record_observation(self, check_id: int, flight: dict, threshold: int) -> None:
-        await self.db.execute("""INSERT OR IGNORE INTO flight_observations
+        await self.db.execute("""INSERT INTO flight_observations
             (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at,flightaware_id,origin_timezone,destination_timezone)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), utcnow(), flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone")))
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""", (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), utcnow(), flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone")))
         await self.db.commit()
 
     @serialized_write
@@ -31,9 +31,9 @@ class CheckRepository(BaseRepository):
         if not flights:
             return
         observed_at = utcnow()
-        await self.db.executemany("""INSERT OR IGNORE INTO flight_observations
+        await self.db.executemany("""INSERT INTO flight_observations
             (check_id,flight_id,origin,destination,scheduled_departure,estimated_departure,delay_minutes,above_threshold,observed_at,flightaware_id,origin_timezone,destination_timezone)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", [
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""", [
                 (check_id, flight["flight_id"], flight.get("origin"), flight.get("destination"), flight.get("scheduled_departure"), flight.get("estimated_departure"), flight.get("delay_minutes"), int((flight.get("delay_minutes") or 0) >= threshold), observed_at, flight.get("flightaware_id"), flight.get("origin_timezone"), flight.get("destination_timezone"))
                 for flight in flights
             ])
@@ -77,8 +77,10 @@ class CheckRepository(BaseRepository):
         return await (await self.db.execute("SELECT * FROM flight_observations WHERE check_id=? ORDER BY id", (check_id,))).fetchall()
 
     async def usage(self, since: str, actor_user_id: int | None = None):
-        query = """SELECT COALESCE(SUM(1 + a.retry_number), 0) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
-            SUM(a.status_code IS NULL OR a.status_code >= 400) AS errors, SUM(a.retry_number) AS retries
+        query = """SELECT COALESCE(SUM(1 + a.retry_number), 0) AS total,
+            SUM(CASE WHEN a.status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success,
+            SUM(CASE WHEN a.status_code IS NULL OR a.status_code >= 400 THEN 1 ELSE 0 END) AS errors,
+            SUM(a.retry_number) AS retries
             FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"""
         args: list = [since]
         if actor_user_id is not None:
@@ -90,10 +92,12 @@ class CheckRepository(BaseRepository):
         return await (await self.db.execute("""SELECT COALESCE(a.actor_user_id, c.actor_user_id) AS user_id,
             CASE WHEN NULLIF(u.username, '') IS NOT NULL THEN '@' || u.username
                  ELSE COALESCE(NULLIF(u.display_name, ''), CAST(COALESCE(a.actor_user_id, c.actor_user_id) AS TEXT)) END AS user_name,
-            COALESCE(SUM(1 + a.retry_number), 0) AS total, SUM(a.status_code BETWEEN 200 AND 299) AS success,
-            SUM(a.status_code IS NULL OR a.status_code >= 400) AS errors, SUM(a.retry_number) AS retries
+            COALESCE(SUM(1 + a.retry_number), 0) AS total,
+            SUM(CASE WHEN a.status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success,
+            SUM(CASE WHEN a.status_code IS NULL OR a.status_code >= 400 THEN 1 ELSE 0 END) AS errors,
+            SUM(a.retry_number) AS retries
             FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id LEFT JOIN users u ON u.telegram_user_id=COALESCE(a.actor_user_id, c.actor_user_id)
-            WHERE a.created_at>=? GROUP BY COALESCE(a.actor_user_id, c.actor_user_id) ORDER BY total DESC""", (since,))).fetchall()
+            WHERE a.created_at>=? GROUP BY COALESCE(a.actor_user_id, c.actor_user_id), u.username, u.display_name ORDER BY total DESC""", (since,))).fetchall()
 
     async def api_request_count(self, since: str, actor_user_id: int | None = None) -> int:
         query = "SELECT COALESCE(SUM(1 + a.retry_number), 0) FROM api_requests a LEFT JOIN checks c ON c.id=a.check_id WHERE a.created_at>=?"

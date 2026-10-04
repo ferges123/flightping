@@ -32,7 +32,7 @@ async def run(settings: Settings) -> None:
     from .web import WebPanel, serve as serve_web
 
     settings.state_dir.mkdir(parents=True, exist_ok=True)
-    db = await Database(settings.database_path).connect()
+    db = await Database(settings.database_target).connect()
     repo = Repository(db, settings.credentials_key)
     await repo.sync_admins(settings.admin_user_ids)
     await repo.recover_monitors_after_restart()

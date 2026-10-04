@@ -81,18 +81,21 @@ class Maintenance:
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         async with self.db.write_lock:
             await self._retain_data()
-            await self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            await self.db.commit()
-            backup_path = self.backup_dir / f"flightpingbot-{datetime.now(timezone.utc):%Y%m%d}.sqlite3"
-            if backup_path.exists():
-                backup_path.unlink()
-            target = await aiosqlite.connect(backup_path)
-            try:
-                await self.db.conn.backup(target)
-            finally:
-                await target.close()
-        backup_path.chmod(0o600)
-        await self._retain_backups()
+            if getattr(self.db, "backend", "sqlite") == "sqlite" and hasattr(self.db, "conn") and self.db.conn is not None:
+                await self.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                await self.db.commit()
+                backup_path = self.backup_dir / f"flightpingbot-{datetime.now(timezone.utc):%Y%m%d}.sqlite3"
+                if backup_path.exists():
+                    backup_path.unlink()
+                target = await aiosqlite.connect(backup_path)
+                try:
+                    await self.db.conn.backup(target)
+                finally:
+                    await target.close()
+                backup_path.chmod(0o600)
+                await self._retain_backups()
+            else:
+                await self.db.commit()
 
     async def _retain_backups(self) -> None:
         backups = sorted(self.backup_dir.glob("flightpingbot-*.sqlite3"), key=lambda path: path.stat().st_mtime, reverse=True)

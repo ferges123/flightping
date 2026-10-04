@@ -78,8 +78,8 @@ class UserRepository(BaseRepository):
         if pending:
             await self.db.commit()
             return UserStatus.PENDING, pending[0]
-        await self.db.execute("INSERT INTO access_requests(telegram_user_id,status,created_at) VALUES (?,?,?)", (user_id, AccessRequestStatus.PENDING, now))
-        request_id = (await (await self.db.execute("SELECT last_insert_rowid()")).fetchone())[0]
+        cursor = await self.db.execute("INSERT INTO access_requests(telegram_user_id,status,created_at) VALUES (?,?,?)", (user_id, AccessRequestStatus.PENDING, now))
+        request_id = cursor.lastrowid
         await self.db.commit()
         return "requested", request_id
 

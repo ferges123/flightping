@@ -52,10 +52,26 @@ class Settings:
     web_host: str = "127.0.0.1"
     web_port: int = 8080
     web_auth_token: str = ""
+    database_url: str = ""
 
     @property
     def database_path(self) -> Path:
         return self.state_dir / "flightpingbot.sqlite3"
+
+    @property
+    def database_backend(self) -> str:
+        url = self.database_url.lower()
+        if url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
+            return "postgres"
+        return "sqlite"
+
+    @property
+    def database_target(self) -> Path | str:
+        if self.database_backend == "postgres":
+            return self.database_url
+        if self.database_url.startswith("sqlite:///"):
+            return Path(self.database_url[len("sqlite:///") - 1:])
+        return self.database_path
 
     @classmethod
     def from_env(cls, env_file: str | Path | None = None) -> "Settings":
@@ -88,6 +104,9 @@ class Settings:
             ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError as exc:
             raise ConfigError(f"FPB_TIMEZONE is not a valid IANA timezone: {timezone_name}") from exc
+        database_url = os.getenv("FPB_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
+        if database_url and not database_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://", "sqlite://")):
+            raise ConfigError("FPB_DATABASE_URL must be a PostgreSQL (postgresql://) or SQLite (sqlite://) URL")
         return cls(
             token, admins, state_dir,
             _int("FPB_MONITOR_INTERVAL_MINUTES", 30, minimum=1),
@@ -112,4 +131,5 @@ class Settings:
             os.getenv("FPB_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
             _int("FPB_WEB_PORT", 8080, minimum=1),
             web_auth_token,
+            database_url,
         )

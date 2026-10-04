@@ -332,6 +332,10 @@ def make_router(auth: Auth, repo: Repository, bot, monitor=None) -> Router:
     async def db_status(message: Message):
         if not admin(message):
             return
+        if getattr(repo.db, "backend", "sqlite") == "postgres":
+            status_text = await repo.db.status_text()
+            await message.answer(status_text, parse_mode="HTML")
+            return
         db_path = repo.db.path
         wal_path = db_path.with_name(db_path.name + "-wal")
         backups = sorted((auth.settings.state_dir / "backups").glob("flightpingbot-*.sqlite3"), reverse=True)

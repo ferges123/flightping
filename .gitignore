@@ -50,3 +50,4 @@ Thumbs.db
 # Agent & CLI scratch directories
 .agents/
 .codex/
+docs/

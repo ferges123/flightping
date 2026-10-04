@@ -2,7 +2,7 @@
 
 Private, asynchronous Telegram bot for checking scheduled departures and flight delays through [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/).
 
-The bot works only in private Telegram chats. Access is granted by an administrator, and each approved user provides their own AeroAPI key. Keys are encrypted before they are stored in SQLite.
+The bot works only in private Telegram chats. Access is granted by an administrator, and each approved user provides their own AeroAPI key. Keys are encrypted before they are stored in SQLite or PostgreSQL.
 
 ## Features
 
@@ -14,7 +14,8 @@ The bot works only in private Telegram chats. Access is granted by an administra
 - separate AeroAPI credentials for each user;
 - Fernet encryption for stored keys and deletion of key messages;
 - API request limits and per-user cooldowns;
-- audit log, usage statistics, SQLite backups, and data retention cleanup;
+- SQLite (default, with automated local snapshots) and PostgreSQL database backends;
+- audit log, usage statistics, and automated data retention cleanup;
 - hardened systemd service configuration.
 
 ## Lightweight web panel
@@ -51,7 +52,8 @@ values, but deliberately never exposes bot tokens or AeroAPI keys.
 - a Telegram account and bot token from BotFather;
 - a FlightAware account with AeroAPI enabled;
 - the Telegram user ID of at least one administrator;
-- Linux with systemd for production deployment.
+- Linux with systemd for production deployment;
+- PostgreSQL 14+ (optional, when using PostgreSQL instead of SQLite).
 
 ## Development installation
 
@@ -98,6 +100,7 @@ The example configuration is available in [.env.example](/opt/flightping/.env.ex
 | `FPB_CREDENTIALS_KEY` | Stable Fernet key used to encrypt AeroAPI keys. |
 | `FPB_ADMIN_USER_IDS` | Comma-separated Telegram administrator user IDs. |
 | `FPB_STATE_DIR` | Directory for the database, backups, and state; defaults to `/opt/flightping/state`. |
+| `FPB_DATABASE_URL` | Optional database connection URL. When omitted, SQLite is used at `state/flightpingbot.sqlite3`. Set to `postgresql://user:password@host:5432/flightping` to use PostgreSQL. |
 | `FPB_MONITOR_INTERVAL_MINUTES` | Interval between monitoring checks. |
 | `FPB_MONITOR_WINDOW_HOURS` | Departure window requested from AeroAPI. |
 | `FPB_MONITOR_DURATION_HOURS` | Maximum monitoring duration. |
@@ -177,7 +180,7 @@ Administrators are configured through `FPB_ADMIN_USER_IDS`.
 | `/alerts [IATA]` | Show alert history. |
 | `/audit [days]` | Show recent audit events. |
 | `/admin_status` | Show users, monitoring, and database status. |
-| `/db_status` | Show database, WAL, and backup information. |
+| `/db_status` | Show database status (WAL and backups for SQLite; engine version, database size, and active connections for PostgreSQL). |
 | `/stopall` | Emergency stop for all monitors. |
 
 After `revoke` or `block`, the user's active monitors are stopped and any in-progress input flow can no longer be completed.
@@ -212,20 +215,51 @@ The optional [flightpingbot-healthcheck.service](/opt/flightping/flightpingbot-h
 
 ## Data and backups
 
-By default, application data is stored in:
+FlightPingBot supports both SQLite (default) and PostgreSQL backends:
 
-```text
-state/flightpingbot.sqlite3
-state/backups/
-```
+- **SQLite (default)**: When `FPB_DATABASE_URL` is omitted, data is stored locally in `state/flightpingbot.sqlite3`. SQLite runs in WAL mode with secure permissions (`0600` for database files, `0700` for the state directory). The automated maintenance task executes WAL checkpoints, creates up to three local snapshot backups in `state/backups/`, and removes expired records according to retention settings.
+- **PostgreSQL**: Set `FPB_DATABASE_URL` to a PostgreSQL connection URL (e.g. `postgresql://user:password@localhost:5432/flightping`). Migrations are applied automatically upon connection using connection pooling (`asyncpg`). Maintenance tasks purge expired data according to retention policies. Database passwords are masked in logs and `/db_status` outputs.
 
-SQLite runs in WAL mode. On startup, the database and its `-wal` and `-shm` files are secured with `0600` permissions, while the state directory uses `0700`. The maintenance task creates up to three backups and removes old records according to the retention settings.
+In production, periodically maintain off-host copies of your database (e.g. through `pg_dump` for PostgreSQL or by offloading `state/backups/` for SQLite).
 
-A local backup is not a substitute for an off-host copy. In production, periodically copy `state/backups/` to a secure separate location.
+### Migrating from SQLite to PostgreSQL
+
+The repository provides [scripts/migrate_sqlite_to_postgres.py](/opt/flightping/scripts/migrate_sqlite_to_postgres.py) to migrate an existing SQLite database to PostgreSQL without data loss.
+
+The migration script:
+1. Applies all pending schema migrations to the target PostgreSQL database;
+2. Copies all records in dependency order inside a single atomic transaction;
+3. Resynchronizes all table serial sequences (`setval`) to match current maximum IDs;
+4. Verifies row counts between SQLite and PostgreSQL, failing if any mismatch is detected.
+
+To migrate:
+
+1. Stop the bot service:
+   ```bash
+   systemctl --user stop flightpingbot.service
+   ```
+2. Run the migration script:
+   ```bash
+   .venv/bin/python scripts/migrate_sqlite_to_postgres.py \
+     --sqlite-path state/flightpingbot.sqlite3 \
+     --postgres-url "postgresql://user:password@localhost:5432/flightping"
+   ```
+   *(Alternatively, export `FPB_DATABASE_URL` or load `config/flightpingbot.env` before running).*
+3. Verify that all tables show `[MATCH]` in the verification summary.
+4. Set `FPB_DATABASE_URL` in `config/flightpingbot.env`:
+   ```bash
+   FPB_DATABASE_URL=postgresql://user:password@localhost:5432/flightping
+   ```
+5. Start the bot service and verify status:
+   ```bash
+   systemctl --user start flightpingbot.service
+   ```
+   Send `/db_status` to the bot in Telegram as an administrator to inspect PostgreSQL version, database size, and active connection count.
 
 ## Security notes
 
 - `config/flightpingbot.env` contains secrets and must remain outside Git;
+- database passwords in `FPB_DATABASE_URL` are masked in logs and administrative outputs (`/db_status`), but `config/flightpingbot.env` must always be protected with restricted file permissions (`0600`);
 - keep `FPB_CREDENTIALS_KEY` separately from the repository and database backups;
 - do not change `FPB_CREDENTIALS_KEY` without a migration plan for encrypted data;
 - the bot should not be used in groups or channels;

@@ -45,7 +45,7 @@ class MonitorJobRepository(BaseRepository):
                                  duration_hours: int | None = None) -> tuple[int, bool]:
         existing = await (await self.db.execute("SELECT id FROM monitor_jobs WHERE status=? AND actor_user_id=? AND airport=? LIMIT 1", (MonitorJobStatus.ACTIVE, actor_user_id, airport))).fetchone()
         if existing:
-            cursor = await self.db.execute("INSERT OR IGNORE INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?)", (existing[0], actor_user_id, chat_id, utcnow()))
+            cursor = await self.db.execute("INSERT INTO monitor_subscriptions(job_id,telegram_user_id,chat_id,created_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING", (existing[0], actor_user_id, chat_id, utcnow()))
             await self.db.commit()
             return existing[0], cursor.rowcount == 1
         active = await (await self.db.execute("SELECT COUNT(*) FROM monitor_jobs WHERE status=? AND actor_user_id=?", (MonitorJobStatus.ACTIVE, actor_user_id))).fetchone()
