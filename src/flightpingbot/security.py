@@ -49,7 +49,8 @@ class InboundSecurityMiddleware(BaseMiddleware):
             while times and times[0] <= cutoff:
                 times.popleft()
             if len(times) >= self.messages_per_minute:
-                if now - self._last_rate_notice.get(user_id, 0.0) >= 60.0:
+                last_notice = self._last_rate_notice.get(user_id)
+                if last_notice is None or now - last_notice >= 60.0:
                     self._last_rate_notice[user_id] = now
                     try:
                         await event.answer("⏳ Too many messages. Please wait a moment and try again.")

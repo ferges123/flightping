@@ -105,3 +105,52 @@ async def test_expired_state_is_cleared_but_cancel_remains_available(monkeypatch
     await middleware(handler, FakeMessage(text="/cancel"), {"state": cancel_state})
     assert cancel_state.cleared is False
     assert calls == ["/cancel"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_notice_with_low_system_uptime(monkeypatch):
+    monkeypatch.setattr("flightpingbot.security.time.monotonic", lambda: 5.0)
+    middleware = InboundSecurityMiddleware(frozenset(), messages_per_minute=1, state_ttl_seconds=900)
+    calls = []
+
+    async def handler(event, data):
+        calls.append(event.text)
+
+    await middleware(handler, FakeMessage(text="first"), {})
+    blocked = FakeMessage(text="second")
+    assert await middleware(handler, blocked, {}) is None
+    assert calls == ["first"]
+    assert blocked.answers == ["⏳ Too many messages. Please wait a moment and try again."]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_notice_throttled(monkeypatch):
+    current_time = 10.0
+    monkeypatch.setattr("flightpingbot.security.time.monotonic", lambda: current_time)
+    middleware = InboundSecurityMiddleware(frozenset(), messages_per_minute=1, state_ttl_seconds=900)
+    calls = []
+
+    async def handler(event, data):
+        calls.append(event.text)
+
+    await middleware(handler, FakeMessage(text="first"), {})
+    blocked1 = FakeMessage(text="second")
+    await middleware(handler, blocked1, {})
+    assert blocked1.answers == ["⏳ Too many messages. Please wait a moment and try again."]
+
+    # Immediate next blocked message should not receive duplicate notice
+    current_time = 15.0
+    blocked2 = FakeMessage(text="third")
+    await middleware(handler, blocked2, {})
+    assert blocked2.answers == []
+
+    # After 60 seconds, window clears. New message is allowed.
+    current_time = 75.0
+    allowed = FakeMessage(text="fourth")
+    await middleware(handler, allowed, {})
+    assert calls == ["first", "fourth"]
+
+    # Subsequent message is blocked again and receives notice since >= 60s passed since first notice
+    blocked3 = FakeMessage(text="fifth")
+    await middleware(handler, blocked3, {})
+    assert blocked3.answers == ["⏳ Too many messages. Please wait a moment and try again."]
