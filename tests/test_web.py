@@ -144,9 +144,25 @@ async def test_successes_page_shows_voucher_opportunity_link(tmp_path):
     finally:
         await repo.db.close()
 
-    assert "Delayed flights found&nbsp;<a class='voucher-icon'" in body
+    assert "Delayed flights found" in body
+    assert "<a class='voucher-icon'" in body
     assert ">🎟️</a>" in body
     assert "https://fdp.mastercard.com/pekao" in body
+
+
+@pytest.mark.asyncio
+async def test_successes_page_today_filter(tmp_path):
+    repo = await _make_repo(tmp_path)
+    panel = WebPanel(repo, StubMonitor(), StubBot(), frozenset({100}))
+    try:
+        async with _client(panel) as client:
+            response = await client.get("/successes?day=today")
+            body = (await response.aread()).decode()
+    finally:
+        await repo.db.close()
+
+    assert "aria-pressed='true'" in body
+    assert "value='all'" in body
 
 
 @pytest.mark.asyncio
