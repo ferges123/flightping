@@ -60,17 +60,26 @@ class CheckRepository(BaseRepository):
             (CheckStatus.COMPLETED, limit),
         )).fetchall()
 
-    async def delayed_observations(self, limit: int = 100):
+    async def delayed_observations(self, limit: int = 100, *, since: str | None = None, until: str | None = None):
+        filters = ["above_threshold=1"]
+        args: list = []
+        if since is not None:
+            filters.append("observed_at>=?")
+            args.append(since)
+        if until is not None:
+            filters.append("observed_at<?")
+            args.append(until)
+        args.append(limit)
         return await (await self.db.execute(
-            """SELECT o.*, c.airport FROM flight_observations o
+            f"""SELECT o.*, c.airport FROM flight_observations o
                JOIN (
                    SELECT MAX(id) AS id FROM flight_observations
-                   WHERE above_threshold=1
+                   WHERE {' AND '.join(filters)}
                    GROUP BY flight_id, scheduled_departure
                ) latest ON latest.id=o.id
                JOIN checks c ON c.id=o.check_id
                ORDER BY o.id DESC LIMIT ?""",
-            (limit,),
+            args,
         )).fetchall()
 
     async def check_observations(self, check_id: int):

@@ -40,6 +40,8 @@ th, td { text-align: left; padding: .65rem .75rem; border-bottom: 1px solid #edf
 th { background: #f8fafb; font-size: .85rem; } tr:last-child td { border-bottom: 0; }
 .usage-details { display: none; }
 button { border: 0; border-radius: 5px; padding: .4rem .65rem; cursor: pointer; background: #1769aa; color: white; }
+button.filter-toggle { margin-left: .4rem; padding: .35rem .45rem; font-size: .81em; line-height: 1; vertical-align: middle; background: transparent; color: inherit; }
+button.filter-toggle[aria-pressed='true'] { background: #18864b; color: white; }
 button.danger { background: #b42318; } button.secondary { background: #687582; }
 form { display: inline; } h1 { margin-top: 0; } h2 { margin-top: 1.6rem; }
 .monitor-form { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, .55fr) auto; gap: .85rem; align-items: end; margin: .75rem 0 1.5rem; padding: 1rem; background: white; border: 1px solid #dce2e7; border-radius: 8px; box-shadow: 0 1px 2px rgb(23 33 43 / 4%); }
@@ -356,13 +358,28 @@ class WebPanel:
         return self.page("History", body, str(request.url.path) + (f"?page={page}" if page > 1 else ""))
 
     async def successes(self, request):
-        rows = await self.repo.delayed_observations(limit=100)
+        today_only = request.query_params.get("day") == "today"
+        if today_only:
+            local_now = datetime.now(ZoneInfo(self.timezone_name))
+            local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            local_end = local_start + timedelta(days=1)
+            rows = await self.repo.delayed_observations(
+                limit=100,
+                since=local_start.astimezone(timezone.utc).isoformat(),
+                until=local_end.astimezone(timezone.utc).isoformat(),
+            )
+        else:
+            rows = await self.repo.delayed_observations(limit=100)
+        toggle_day = "all" if today_only else "today"
+        toggle_pressed = str(today_only).lower()
+        toggle_title = "Today filter on" if today_only else "Filter to today"
         body = (
-            f"<h1>Delayed flights found&nbsp;<a class='voucher-icon' href='{DELAY_REPORT_URL}' target='_blank' rel='noopener noreferrer' title='Check voucher eligibility' aria-label='Check voucher eligibility'>🎟️</a></h1>"
+            f"<h1>Delayed flights found <form method='get' action='/successes' style='display:inline'><button class='filter-toggle' type='submit' name='day' value='{toggle_day}' aria-label='Filter delayed flights to today only' aria-pressed='{toggle_pressed}' title='{toggle_title}'><span aria-hidden='true'>📅</span></button></form>&nbsp;<a class='voucher-icon' href='{DELAY_REPORT_URL}' target='_blank' rel='noopener noreferrer' title='Check voucher eligibility' aria-label='Check voucher eligibility'>🎟️</a></h1>"
             "<p class='muted'>Latest observation for each delayed flight. Scheduled and estimated times use the origin airport's local time, with UTC in parentheses.</p>"
             f"{_delayed_table(rows, self.timezone_name)}"
         )
-        return self.page("Delayed flights", body, request.url.path)
+        refresh_path = request.url.path + ("?day=today" if today_only else "")
+        return self.page("Delayed flights", body, refresh_path)
 
     async def settings(self, request):
         settings = self.app_settings
